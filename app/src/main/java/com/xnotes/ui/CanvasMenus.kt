@@ -208,12 +208,14 @@ private fun SelectionStylePopup(host: SelectionMenuHost, onDismiss: () -> Unit) 
 }
 
 /**
- * The screenshot tool's floating action, shown above the frozen capture rectangle: a single
- * "Copy as image" button that renders the region and puts it on the system clipboard.
+ * The rectangle tool's floating action: copy a screenshot, or persist a PDF question reference.
  */
 @Composable
 fun ScreenshotMenu(editor: Editor) {
     val rect = editor.screenshotMenu ?: return
+    val label = if (editor.questionSelection) {
+        if (editor.savingQuestion) "Saving…" else "Save as Question"
+    } else "Copy as image"
     val palette = LocalPalette.current
     val density = LocalDensity.current
 
@@ -233,18 +235,20 @@ fun ScreenshotMenu(editor: Editor) {
             .clip(RoundedCornerShape(10.dp))
             .background(palette.menuBg.toComposeColor())
             .border(1.dp, palette.border.toComposeColor(), RoundedCornerShape(10.dp))
-            .clickable { editor.copyScreenshotAsImage() }
+            .clickable(enabled = !editor.savingQuestion) {
+                if (editor.questionSelection) editor.saveScreenshotAsQuestion() else editor.copyScreenshotAsImage()
+            }
             .padding(horizontal = 14.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
             XnotesIcons.copy,
-            contentDescription = "Copy as image",
+            contentDescription = label,
             tint = palette.text.toComposeColor(),
             modifier = Modifier.size(20.dp),
         )
         Text(
-            "Copy as image",
+            label,
             color = palette.text.toComposeColor(),
             fontSize = 14.sp,
             modifier = Modifier.padding(start = 8.dp),

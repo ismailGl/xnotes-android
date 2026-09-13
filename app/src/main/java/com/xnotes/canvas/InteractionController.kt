@@ -127,6 +127,7 @@ class InteractionController(
     private val onSelectionMenu: (Rect?) -> Unit = {},
     /** Screenshot menu: a viewport rect to anchor the "copy as image" bar to, or null to hide. */
     private val onScreenshotMenu: (Rect?) -> Unit = {},
+    private val onScreenshotTooSmall: () -> Unit = {},
     /** Long-press on empty space: open a context menu at (viewport, content). */
     /** Long press on empty space, or on a locked item: the third argument is that item, if any. */
     private val onContextMenu: (Pt, Pt, CanvasItem?) -> Unit = { _, _, _ -> },
@@ -1458,7 +1459,10 @@ class InteractionController(
         mode = PointerMode.IDLE
         val rect = screenshotRect
         // A tap or a sliver isn't a capture: drop it. Otherwise freeze the rect and show its menu.
-        if (rect == null || rect.w < SHOT_MIN || rect.h < SHOT_MIN) clearScreenshot()
+        if (rect == null || rect.w < SHOT_MIN || rect.h < SHOT_MIN) {
+            clearScreenshot()
+            onScreenshotTooSmall()
+        }
         else refreshScreenshotMenu()
         requestRender()
     }

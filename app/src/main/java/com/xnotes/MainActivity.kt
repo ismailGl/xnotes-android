@@ -726,7 +726,7 @@ private fun EditorScreen(
             // the focused pane; its handlers live here so — composed after backstage — they win while
             // a note is open.
             val focused = editor.active
-            if (focused.noteOpen) {
+            if (focused.noteOpen && focused.questionSession == null) {
                 // While a text box is open, Back commits-or-dismisses it (and hides the keyboard).
                 BackHandler(enabled = focused.editingField != null) { focused.commitText() }
                 // A live flow caret session ends first (flushing its typing burst).
@@ -757,7 +757,14 @@ private fun EditorScreen(
                 onSavePagesAsPdf = { pane, pages -> savePagesAsPdf(pane, pages) },
                 onSavePagesAsImages = { pane, pages -> savePagesAsImages(pane, pages) },
             )
-            SplitHost(editor, actions)
+            val questionSession = focused.questionSession
+            if (questionSession != null && focused.noteOpen) {
+                Box(Modifier.fillMaxSize().then(SwallowTouches)) {
+                    com.xnotes.ui.QuestionModeScreen(questionSession, focused::closeQuestionMode)
+                }
+            } else {
+                SplitHost(editor, actions)
+            }
         }
     }
     if (showShareChooser) {

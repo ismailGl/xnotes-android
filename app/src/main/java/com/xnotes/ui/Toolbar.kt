@@ -177,10 +177,20 @@ private fun ToolbarItemView(
 
         ToolbarItem.PEN, ToolbarItem.DASHED, ToolbarItem.CALLIGRAPHY, ToolbarItem.SPEED,
         ToolbarItem.TAPER, ToolbarItem.HIGHLIGHTER, ToolbarItem.ERASER, ToolbarItem.PAN,
-        ToolbarItem.SELECT, ToolbarItem.LASSO, ToolbarItem.SCREENSHOT, ToolbarItem.SHAPE,
+        ToolbarItem.SELECT, ToolbarItem.LASSO, ToolbarItem.SHAPE,
         ToolbarItem.TEXT, ToolbarItem.TEXT_BOX -> {
             val tool = Tool.fromId(item.id)
             if (tool != null) ToolButton(editor, tool, toolIcons[tool], configForTool, setConfigForTool)
+        }
+
+        ToolbarItem.SCREENSHOT -> {
+            ToolButton(editor, Tool.SCREENSHOT, toolIcons[Tool.SCREENSHOT], configForTool, setConfigForTool)
+            if (editor.state.document.hasPdf) {
+                Label("Add Question", active = editor.questionSelection,
+                    modifier = Modifier.clip(RoundedCornerShape(4.dp))
+                        .clickable { editor.startQuestionSelection() })
+                QuestionModeEntry(editor)
+            }
         }
 
         ToolbarItem.WAND ->
@@ -247,6 +257,26 @@ private fun ToolbarItemView(
     }
 }
 
+/** Availability is read off-thread and refreshed after Add Question finishes or the document changes. */
+@Composable
+private fun QuestionModeEntry(editor: Editor) {
+    val doc = editor.state.document
+    var available by remember(doc, doc.path) { mutableStateOf(false) }
+    LaunchedEffect(doc, doc.path, editor.savingQuestion) {
+        if (!editor.savingQuestion) {
+            try { available = editor.findQuestions(doc) != null }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) {
+                available = false
+                editor.message = "Could not read saved questions for this notebook"
+            }
+        }
+    }
+    if (available) Label(if (editor.openingQuestions) "Opening…" else "Question Mode",
+        modifier = Modifier.clip(RoundedCornerShape(4.dp))
+            .clickable(enabled = !editor.openingQuestions) { editor.openQuestionMode() })
+}
+
 /** A stroke/edit tool button: arms the tool, and re-clicking an armed config tool opens its popup. */
 @Composable
 private fun ToolButton(
@@ -258,7 +288,8 @@ private fun ToolButton(
 ) {
     if (icon == null) return
     Box {
-        ToolbarIcon(icon, tool.name, active = editor.tool == tool) {
+        ToolbarIcon(icon, tool.name,
+            active = editor.tool == tool && !(tool == Tool.SCREENSHOT && editor.questionSelection)) {
             if (editor.tool == tool && (tool.isStroke || tool == Tool.SHAPE || tool == Tool.ERASER || tool == Tool.SELECT || tool == Tool.TEXT)) {
                 setConfigForTool(tool)
             } else {
@@ -394,15 +425,23 @@ internal fun Swatch(color: androidx.compose.ui.graphics.Color, active: Boolean, 
 }
 
 @Composable
-internal fun Label(text: String, modifier: Modifier = Modifier) {
+internal fun Label(text: String, modifier: Modifier = Modifier, active: Boolean = false) {
+    val palette = LocalPalette.current
+    val filled = active && palette.isMaterial
     Text(
         text = text,
-        color = LocalPalette.current.textDim.toComposeColor(),
+        color = when {
+            filled -> palette.bg.toComposeColor()
+            active -> palette.accent.toComposeColor()
+            else -> palette.textDim.toComposeColor()
+        },
         fontFamily = FontFamily.Monospace,
         fontSize = 12.sp,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
-        modifier = modifier.padding(horizontal = 4.dp),
+        modifier = modifier
+            .then(if (filled) Modifier.background(palette.accent.toComposeColor()) else Modifier)
+            .padding(horizontal = 4.dp),
     )
 }
 

@@ -444,6 +444,43 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     /** Viewport rect to anchor the screenshot tool's "copy as image" menu, or null when hidden. */
     var screenshotMenu by mutableStateOf<com.xnotes.core.geometry.Rect?>(null)
         private set
+    var questionSelection by mutableStateOf(false)
+        private set
+    var savingQuestion by mutableStateOf(false)
+        private set
+    var questionSession by mutableStateOf<QuestionSession?>(null)
+        private set
+    var openingQuestions by mutableStateOf(false)
+        private set
+
+    suspend fun findQuestions(doc: Document = state.document): com.xnotes.platform.QuestionSetRepository.LoadedSet? {
+        val uri = doc.path ?: return null
+        val pdf = doc.pdfFile ?: return null
+        return withContext(Dispatchers.IO) {
+            com.xnotes.platform.QuestionSetRepository(java.io.File(appContext.filesDir, "questions")).find(uri, pdf)
+        }
+    }
+
+    fun openQuestionMode() {
+        if (openingQuestions || questionSession != null) return
+        val doc = state.document
+        val uri = doc.path ?: return
+        val pdf = doc.pdfFile ?: return
+        openingQuestions = true
+        autosaveScope.launch {
+            try {
+                val set = findQuestions(doc)
+                if (state.document === doc && doc.path == uri && doc.pdfFile == pdf && noteOpen && !canvasOpen) {
+                    if (set == null) message = "No questions saved for this notebook"
+                    else questionSession = QuestionSession(set, pdf)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { message = "Could not load questions. Check the notebook source and question metadata." }
+            finally { openingQuestions = false }
+        }
+    }
+
+    fun closeQuestionMode() { questionSession = null }
 
     /** Long-press paste context menu target, or null when hidden. */
     override var contextMenu by mutableStateOf<ContextMenuTarget?>(null)
@@ -539,6 +576,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         uri: String?,
         displayName: String?,
     ) {
+        closeQuestionMode()
         flushAutosave() // a paged note may be open underneath; do not leave its edits unwritten
         doc.path = uri
         doc.displayName = displayName
@@ -705,11 +743,12 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         onFitWidthSnapped = { showZoomLockHint() },
         onFitWidthReleased = { hideZoomLockHint() },
         onSelectionChanged = { selected -> hasSelection = selected; refreshTextBar() },
-        onToolChanged = { t -> tool = t },
+        onToolChanged = { t -> tool = t; questionSelection = false },
         onTextEditStart = { field -> editingField = field; refreshTextBar() },
         onTextEditEnd = { editingField = null; refreshTextBar() },
         onSelectionMenu = { rect -> selectionMenu = rect },
         onScreenshotMenu = { rect -> screenshotMenu = rect },
+        onScreenshotTooSmall = { if (questionSelection) message = "Selection is too small" },
         onContextMenu = { vp, content, locked -> contextMenu = ContextMenuTarget(vp.x, vp.y, content, locked) },
         onAddPageAtEnd = { addPageAtEnd() },
         onHaptic = { runCatching { view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS) } },
@@ -966,6 +1005,45 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     override fun dismissSelectionMenu() { selectionMenu = null }
     override fun dismissContextMenu() { contextMenu = null }
     fun dismissScreenshot() = controller.clearScreenshot()
+
+    fun startQuestionSelection() {
+        if (!state.document.hasPdf) { message = "Open a PDF-backed notebook first"; return }
+        if (state.document.path == null) { message = "Save the notebook before adding questions"; return }
+        selectTool(Tool.SCREENSHOT)
+        controller.clearScreenshot()
+        questionSelection = true
+        message = "Select a question within one PDF page"
+    }
+
+    fun saveScreenshotAsQuestion() {
+        if (savingQuestion) return
+        val rect = controller.screenshotRect ?: return
+        val selected = try { com.xnotes.canvas.QuestionCrop.fromSelection(state, rect) }
+        catch (e: IllegalArgumentException) { message = e.message; return }
+        val doc = state.document
+        val uri = doc.path ?: run { message = "Save the notebook before adding questions"; return }
+        val pdf = doc.pdfFile ?: run { message = "Page is not PDF-backed"; return }
+        val title = doc.title
+        val question = com.xnotes.core.model.Question(java.util.UUID.randomUUID().toString(), selected.sourcePageIndex, selected.crop)
+        savingQuestion = true
+        autosaveScope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    com.xnotes.platform.QuestionSetRepository(java.io.File(appContext.filesDir, "questions"))
+                        .append(uri, title, pdf, question)
+                }
+            }
+            savingQuestion = false
+            if (result.isSuccess) {
+                if (state.document === doc && controller.screenshotRect === rect) {
+                    controller.clearScreenshot()
+                    controller.switchBackAfterScreenshot()
+                    questionSelection = false
+                }
+                message = "Question added"
+            } else message = "Could not save question. Please try again."
+        }
+    }
 
     /** Render the screenshot tool's capture rectangle to a PNG and put it on the system clipboard. */
     fun copyScreenshotAsImage() {
@@ -3725,6 +3803,9 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     }
 
     private fun replaceDocument(doc: Document) {
+        closeQuestionMode()
+        questionSelection = false
+        controller.clearScreenshot()
         saveViewState() // remember the outgoing folder note's view before switching away
         flowText.endSession() // flushes the typing burst so the autosave below carries it
         flushAutosave() // save the outgoing note if it was autosaving to the folder
@@ -3752,6 +3833,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     // --- tools & colour ---
 
     fun selectTool(t: Tool) {
+        questionSelection = false
         controller.setTool(t)
         tool = t
     }
@@ -4181,6 +4263,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     var keyActions = KeyActions()
 
     fun handleKeyDown(e: android.view.KeyEvent): Boolean {
+        if (questionSession != null) return false
         // A canvas is on top: it owns the keyboard, and understands only its own shortcuts.
         if (canvasOpen) return infinite.handleKeyDown(e)
         // A live flow caret session owns the keyboard first (Ctrl+B means bold here).
@@ -4656,6 +4739,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
      *  controller's held latch, and the vendor double-tap/click keycodes to their gesture handlers.
      *  Returns true when consumed, so the host swallows the key. */
     fun onStylusButtonKey(e: android.view.KeyEvent): Boolean {
+        if (questionSession != null) return false
         if (e.keyCode == penDoubleTapKeycode) return onPenDoubleTapKey(e)
         if (e.keyCode in penButtonTapKeycodes) return onPenButtonTapKey(e)
         val down = when (e.action) {
@@ -4707,6 +4791,9 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     }
 
     fun newNote() {
+        closeQuestionMode()
+        questionSelection = false
+        controller.clearScreenshot()
         saveViewState()
         flushAutosave()
         autosaveUri = null
@@ -4816,6 +4903,9 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     /** Pop back to backstage: detach the current note (flush autosave, drop the binding) and clear
      *  [noteOpen] so the editor is removed from the stack. The document stays as an inert buffer. */
     fun goHome() {
+        closeQuestionMode()
+        questionSelection = false
+        controller.clearScreenshot()
         if (!noteOpen) return
         // A canvas has none of the paged note's text sessions, autosave binding or thumbnails yet,
         // so leaving one is just popping the layer.
