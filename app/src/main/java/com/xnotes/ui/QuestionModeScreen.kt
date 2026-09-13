@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -15,13 +16,15 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import com.xnotes.platform.QuestionPdfRenderer
 import com.xnotes.ui.theme.LocalPalette
 import com.xnotes.ui.theme.toComposeColor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.awaitCancellation
 
-/** Read-only question review; no answer state or notebook editor is created. */
+/** Question preview over an independently owned paged answer canvas. */
 @Composable
 fun QuestionModeScreen(session: QuestionSession, onBack: () -> Unit) {
     BackHandler(onBack = onBack)
@@ -33,14 +36,10 @@ fun QuestionModeScreen(session: QuestionSession, onBack: () -> Unit) {
         runCatching { focus.requestFocus() }
         try { awaitCancellation() } finally { renderer.close() }
     }
+    var contentHeight by remember { mutableIntStateOf(1) }
     Column(Modifier.fillMaxSize().background(palette.bg.toComposeColor())
-        .focusRequester(focus).focusable().padding(12.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("Back to notebook") }
-            Text("Question ${if (session.count == 0) 0 else session.index + 1} / ${session.count}",
-                modifier = Modifier.weight(1f).padding(horizontal = 16.dp), color = palette.text.toComposeColor())
-        }
-        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+        .focusRequester(focus).focusable().onSizeChanged { contentHeight = it.height.coerceAtLeast(1) }) {
+        BoxWithConstraints(Modifier.weight(if (session.answers == null) 1f else session.split).fillMaxWidth()) {
             val widthPx = with(LocalDensity.current) { maxWidth.roundToPx() }
             val heightPx = with(LocalDensity.current) { maxHeight.roundToPx() }
             key(session.index, widthPx, heightPx) {
@@ -48,21 +47,47 @@ fun QuestionModeScreen(session: QuestionSession, onBack: () -> Unit) {
                 when {
                     entry == null -> ViewerMessage("No questions saved for this notebook")
                     entry.question == null -> ViewerMessage(entry.error ?: "Invalid question metadata")
-                    widthPx > 0 && heightPx > 0 -> QuestionBody(renderer, entry.question, widthPx, heightPx)
+                    widthPx > 0 && heightPx > 0 -> QuestionBody(renderer, entry.question, widthPx, heightPx,
+                        session.annotations?.surface as? AnswerCanvasController)
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().heightIn(min = 56.dp),
+        session.annotations?.let { annotations ->
+            annotations.error?.let { error ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Question ink: $error", Modifier.weight(1f), color = palette.text.toComposeColor())
+                    TextButton(onClick = annotations::retry, enabled = !session.busy) { Text("Retry") }
+                }
+            }
+        }
+        session.answers?.let { answers ->
+            Box(Modifier.fillMaxWidth().height(12.dp).background(palette.panel.toComposeColor())
+                .pointerInput(session, contentHeight) {
+                    detectVerticalDragGestures(onDragStart = {
+                        session.answers.surface?.finishInput()
+                        session.annotations?.surface?.finishInput()
+                    }) { change, dy ->
+                        change.consume()
+                        session.split = (session.split + dy / contentHeight).coerceIn(0.2f, 0.75f)
+                    }
+                }, contentAlignment = Alignment.Center) {
+                Box(Modifier.width(48.dp).height(3.dp).background(palette.border.toComposeColor()))
+            }
+            AnswerCanvasPane(answers, Modifier.weight(1f - session.split).fillMaxWidth())
+        }
+        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp),
             horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = session::previous, enabled = session.canPrevious) { Text("◀ Previous") }
-            Spacer(Modifier.width(32.dp))
+            Text("Question ${if (session.count == 0) 0 else session.index + 1} / ${session.count}",
+                Modifier.padding(horizontal = 16.dp), color = palette.text.toComposeColor())
             TextButton(onClick = session::next, enabled = session.canNext) { Text("Next ▶") }
         }
     }
 }
 
 @Composable
-private fun QuestionBody(renderer: QuestionPdfRenderer, question: com.xnotes.core.model.Question, widthPx: Int, heightPx: Int) {
+private fun QuestionBody(renderer: QuestionPdfRenderer, question: com.xnotes.core.model.Question, widthPx: Int, heightPx: Int,
+    annotation: AnswerCanvasController?) {
     var pageSize by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(renderer, question) {
@@ -75,7 +100,7 @@ private fun QuestionBody(renderer: QuestionPdfRenderer, question: com.xnotes.cor
     when {
         error != null -> ViewerMessage(error!!)
         current == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-        else -> ZoomableQuestion(renderer, question, current, widthPx, heightPx)
+        else -> key(annotation) { ZoomableQuestion(renderer, question, current, widthPx, heightPx, annotation) }
     }
 }
 

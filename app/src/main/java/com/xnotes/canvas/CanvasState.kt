@@ -586,7 +586,23 @@ class CanvasState(
 
     // --- transforms ---
 
+    /** Optional host-owned viewport, used by the crop annotation overlay. */
+    var externalOrigin: Pt? = null
+
+    /** Map stable crop-page coordinates through the PDF viewer's uniform transform. */
+    fun applyCropViewport(transform: com.xnotes.core.geometry.ZoomPanTransform) {
+        val page = document.pages.single()
+        val pageOrigin = fromPageSpace(0, Pt(0.0, 0.0))
+        zoom = transform.scale * transform.contentWidth / page.width
+        externalOrigin = Pt(transform.left - pageOrigin.x * zoom, transform.top - pageOrigin.y * zoom)
+        minZoom = transform.fitScale * transform.contentWidth / page.width
+        maxZoom = minZoom * com.xnotes.core.geometry.ZoomPanTransform.MAX_ZOOM
+        scrollX = 0.0
+        scrollY = 0.0
+    }
+
     fun origin(): Pt {
+        externalOrigin?.let { return it }
         val cw = contentW * zoom
         val ch = contentH * zoom
         // Paginated: the row clamp centres the row when it fits, so the scroll always wins; the

@@ -160,11 +160,18 @@ private fun ToolbarItemView(
     onAddStickers: () -> Unit,
     onToggleFullscreen: () -> Unit,
 ) {
+    if (editor.questionSession != null && item !in setOf(ToolbarItem.HOME,
+            ToolbarItem.PEN, ToolbarItem.DASHED, ToolbarItem.CALLIGRAPHY, ToolbarItem.SPEED,
+            ToolbarItem.TAPER, ToolbarItem.HIGHLIGHTER, ToolbarItem.ERASER, ToolbarItem.PAN,
+            ToolbarItem.SELECT, ToolbarItem.LASSO, ToolbarItem.SHAPE, ToolbarItem.UNDO,
+            ToolbarItem.REDO, ToolbarItem.COLORS, ToolbarItem.FULLSCREEN)) return
+    val questionTools = editor.questionSession?.tools
+    val popupHost: ToolPopupHost = questionTools ?: editor
     when (item) {
         // Canvas-only items; a stored paged layout can never hold one, so nothing is drawn.
         ToolbarItem.WAYPOINTS, ToolbarItem.MINIMAP -> Unit
 
-        ToolbarItem.HOME -> ToolbarIcon(XnotesIcons.prev, "Home") { onOpenBackstage() }
+        ToolbarItem.HOME -> ToolbarIcon(XnotesIcons.prev, if (questionTools == null) "Home" else "Back to notebook") { onOpenBackstage() }
         ToolbarItem.TITLE -> Label(
             editor.title,
             modifier = Modifier
@@ -200,8 +207,10 @@ private fun ToolbarItemView(
 
         ToolbarItem.IMAGE -> ImageMenu(editor, onInsertImage, onAddStickers)
 
-        ToolbarItem.UNDO -> ToolbarIcon(XnotesIcons.undo, "Undo", enabled = editor.canUndo) { editor.undo() }
-        ToolbarItem.REDO -> ToolbarIcon(XnotesIcons.redo, "Redo", enabled = editor.canRedo) { editor.redo() }
+        ToolbarItem.UNDO -> ToolbarIcon(XnotesIcons.undo, "Undo", enabled =
+            if (questionTools == null) editor.canUndo else questionTools.active?.canUndo == true && editor.questionSession?.busy == false) { editor.undo() }
+        ToolbarItem.REDO -> ToolbarIcon(XnotesIcons.redo, "Redo", enabled =
+            if (questionTools == null) editor.canRedo else questionTools.active?.canRedo == true && editor.questionSession?.busy == false) { editor.redo() }
 
         ToolbarItem.PAGE_NAV -> {
             ToolbarIcon(XnotesIcons.prev, "Previous page") { editor.prevPage() }
@@ -244,14 +253,14 @@ private fun ToolbarItemView(
 
         ToolbarItem.FULLSCREEN -> ToolbarIcon(XnotesIcons.fullscreen, "Full screen") { onToggleFullscreen() }
 
-        ToolbarItem.COLORS -> editor.toolbarColors.take(editor.toolbarColorCount).forEachIndexed { i, color ->
+        ToolbarItem.COLORS -> popupHost.hostToolbarColors.take(editor.toolbarColorCount).forEachIndexed { i, color ->
             Box {
                 Swatch(
                     color = color.toComposeColor(),
-                    active = i == editor.activeColorIndex,
-                    onClick = { if (i == editor.activeColorIndex) setSwitcherIndex(i) else editor.pickColor(i) },
+                    active = i == popupHost.hostActiveColorIndex,
+                    onClick = { if (i == popupHost.hostActiveColorIndex) setSwitcherIndex(i) else editor.pickColor(i) },
                 )
-                if (switcherIndex == i) ColorSwitcherPopup(editor, i) { setSwitcherIndex(null) }
+                if (switcherIndex == i) ColorSwitcherPopup(popupHost, i) { setSwitcherIndex(null) }
             }
         }
     }
@@ -287,10 +296,14 @@ private fun ToolButton(
     setConfigForTool: (Tool?) -> Unit,
 ) {
     if (icon == null) return
+    val tools = editor.questionSession?.tools
+    val activeTool = tools?.tool ?: editor.tool
+    val host: ToolPopupHost = tools ?: editor
     Box {
         ToolbarIcon(icon, tool.name,
-            active = editor.tool == tool && !(tool == Tool.SCREENSHOT && editor.questionSelection)) {
-            if (editor.tool == tool && (tool.isStroke || tool == Tool.SHAPE || tool == Tool.ERASER || tool == Tool.SELECT || tool == Tool.TEXT)) {
+            enabled = editor.questionSession?.busy != true,
+            active = activeTool == tool && !(tool == Tool.SCREENSHOT && editor.questionSelection)) {
+            if (activeTool == tool && (tool.isStroke || tool == Tool.SHAPE || tool == Tool.ERASER || tool == Tool.SELECT || tool == Tool.TEXT)) {
                 setConfigForTool(tool)
             } else {
                 editor.selectTool(tool)
@@ -299,11 +312,11 @@ private fun ToolButton(
         }
         if (configForTool == tool) {
             when {
-                tool == Tool.SHAPE -> ShapeConfigPopup(editor) { setConfigForTool(null) }
-                tool == Tool.ERASER -> EraserConfigPopup(editor) { setConfigForTool(null) }
-                tool == Tool.SELECT -> SelectConfigPopup(editor) { setConfigForTool(null) }
+                tool == Tool.SHAPE -> ShapeConfigPopup(host) { setConfigForTool(null) }
+                tool == Tool.ERASER -> EraserConfigPopup(host) { setConfigForTool(null) }
+                tool == Tool.SELECT -> SelectConfigPopup(host) { setConfigForTool(null) }
                 tool == Tool.TEXT -> TextToolConfigPopup(editor) { setConfigForTool(null) }
-                else -> ToolConfigPopup(editor, tool) { setConfigForTool(null) }
+                else -> ToolConfigPopup(host, tool) { setConfigForTool(null) }
             }
         }
     }

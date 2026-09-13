@@ -70,4 +70,22 @@ class QuestionRenderPlanTest {
                 ZoomPanTransform(6e-10, 8e-10, 1200.0, 800.0))
         }
     }
+
+    @Test fun sharpRegionsAtPanLimitsStayInsideTheSourcePage() {
+        val fit = fitted()
+        for (x in listOf(-10_000.0, 10_000.0)) {
+            for (y in listOf(-10_000.0, 10_000.0)) {
+                val view = fit.gesture(Pt(600.0, 400.0), Pt(x, y), 5.0)
+                val plan = QuestionRenderPlan.create(0, 600, 800, crop, view)
+                assertTrue(plan.left >= 0 && plan.top >= 0)
+                assertTrue(plan.left + plan.width <= plan.fullWidth)
+                assertTrue(plan.top + plan.height <= plan.fullHeight)
+                val visible = view.visibleRect()
+                assertTrue(plan.contentRect.left <= visible.left + 1e-9)
+                assertTrue(plan.contentRect.top <= visible.top + 1e-9)
+                assertTrue(plan.contentRect.right >= visible.right - 1e-9)
+                assertTrue(plan.contentRect.bottom >= visible.bottom - 1e-9)
+            }
+        }
+    }
 }

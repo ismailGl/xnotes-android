@@ -10,6 +10,8 @@ data class NormalizedRect(val left: Double, val top: Double, val right: Double, 
 
 data class Question(val id: String, val sourcePageIndex: Int, val crop: NormalizedRect) {
     init { require(id.isNotBlank() && sourcePageIndex >= 0) }
+    /** Stable derived reference: old question JSON needs no migration or ink fields. */
+    val answerDocumentId: String get() = id
 }
 
 /** Metadata only. The saved notebook owns the embedded PDF; its hash detects source replacement. */

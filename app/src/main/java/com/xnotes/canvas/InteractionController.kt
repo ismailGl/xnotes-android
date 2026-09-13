@@ -2811,6 +2811,20 @@ class InteractionController(
         }
     }
 
+    /** Question answer navigation/background: cancel unfinished ink, but commit erasures already
+     * applied to the page so their dirty state and history are not lost. Ordinary input is unchanged. */
+    fun cancelForTransition() {
+        endHoverAction()
+        if (mode == PointerMode.ERASE) endErase()
+        abortGesture()
+        commitTextEdit()
+        clearSelection()
+        clearScreenshot()
+        stylusButtonHeld = false
+        resetGestureState()
+        requestRender()
+    }
+
     private fun abortGesture() {
         cancelLongPress()
         cancelDwell()

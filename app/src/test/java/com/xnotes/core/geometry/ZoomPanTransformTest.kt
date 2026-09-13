@@ -49,4 +49,16 @@ class ZoomPanTransformTest {
         assertEquals(0.0, portrait.panX, 0.0)
         assertEquals(0.0, portrait.panY, 0.0)
     }
+
+    @Test fun returningToFitClearsResidualPanInEveryDirection() {
+        val fit = ZoomPanTransform(600.0, 800.0, 1200.0, 700.0)
+        for (x in listOf(-10_000.0, 10_000.0)) {
+            for (y in listOf(-10_000.0, 10_000.0)) {
+                val moved = fit.gesture(Pt(250.0, 150.0), Pt(x, y), 4.0)
+                val reset = moved.gesture(Pt(1100.0, 600.0), Pt(x, y), 0.1)
+                assertEquals(fit, reset)
+                assertEquals(Rect(0.0, 0.0, 600.0, 800.0), reset.visibleRect())
+            }
+        }
+    }
 }

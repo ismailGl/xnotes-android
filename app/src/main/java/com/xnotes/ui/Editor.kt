@@ -450,6 +450,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         private set
     var questionSession by mutableStateOf<QuestionSession?>(null)
         private set
+    private val questionHistory = QuestionHistoryCache()
     var openingQuestions by mutableStateOf(false)
         private set
 
@@ -472,7 +473,35 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
                 val set = findQuestions(doc)
                 if (state.document === doc && doc.path == uri && doc.pdfFile == pdf && noteOpen && !canvasOpen) {
                     if (set == null) message = "No questions saved for this notebook"
-                    else questionSession = QuestionSession(set, pdf)
+                    else {
+                        val answerCodec = DocumentCodec(AndroidImageCodec(), AndroidTextMeasurer())
+                        val root = java.io.File(appContext.filesDir, "questions")
+                        val configs = ToolDefaults.persistedTools.associateWith { settings.configFor(it) }
+                        val tools = QuestionTools(configs, toolbarColors, activeColorIndex, recentColors)
+                        val store = com.xnotes.platform.QuestionAnswerRepository(root, set.id, answerCodec)
+                        val annotationStore = com.xnotes.platform.QuestionAnswerRepository(root, set.id, answerCodec,
+                            category = "annotations", blank = { id ->
+                                val question = set.entries.first { it.question?.id == id }.question!!
+                                val renderer = com.xnotes.platform.QuestionPdfRenderer(appContext, pdf)
+                                try {
+                                    val size = renderer.pageSize(question)
+                                    Document.blankPixels(width = (question.crop.right - question.crop.left) * size.first,
+                                        height = (question.crop.bottom - question.crop.top) * size.second)
+                                } finally { renderer.close() }
+                            })
+                        fun host(store: com.xnotes.platform.AnswerStore, annotation: Boolean) = QuestionAnswerSession(store,
+                            { answer, retainedHistory, changed ->
+                                if (annotation) require(answer.pages.size == 1) { "Invalid annotation document" }
+                                AnswerCanvasController(viewContext, answer, buildPalette(settings.prefs), settings.prefs,
+                                    configs, tools.inkColor, changed, retainedHistory ?: History(), annotation,
+                                    tools::activate).also(tools::configure)
+                            }, memory = questionHistory, memoryPrefix = "${set.id}/${if (annotation) "annotations" else "answers"}/")
+                        val answers = host(store, false)
+                        val annotations = host(annotationStore, true)
+                        tools.surfaces = { listOfNotNull(answers.surface as? AnswerCanvasController,
+                            annotations.surface as? AnswerCanvasController) }
+                        questionSession = QuestionSession(set, pdf, answers, annotations, tools)
+                    }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (_: Exception) { message = "Could not load questions. Check the notebook source and question metadata." }
@@ -480,7 +509,10 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         }
     }
 
-    fun closeQuestionMode() { questionSession = null }
+    fun closeQuestionMode() {
+        val current = questionSession ?: return
+        current.close { if (questionSession === current) questionSession = null }
+    }
 
     /** Long-press paste context menu target, or null when hidden. */
     override var contextMenu by mutableStateOf<ContextMenuTarget?>(null)
@@ -1773,6 +1805,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
 
     /** Snapshot live state into settings and save (call on pause/stop). */
     fun persist() {
+        questionSession?.background()
         // A style tuned on the canvas is the same style, so whichever surface was last used wins.
         val fromCanvas = infiniteOrNull
         if (fromCanvas != null && canvasOpen) {
@@ -3833,19 +3866,26 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     // --- tools & colour ---
 
     fun selectTool(t: Tool) {
+        questionSession?.tools?.let { it.select(t); return }
         questionSelection = false
         controller.setTool(t)
         tool = t
     }
 
     /** Run the action a two/three-finger tap or stylus double-tap is mapped to; "none" does nothing. */
-    private fun dispatchTapGesture(action: String) = when (action) {
+    private fun dispatchTapGesture(action: String) {
+        if (questionSession != null) {
+            questionSession?.tools?.active?.gesture(action)
+            return
+        }
+        when (action) {
         "undo" -> undo()
         "redo" -> redo()
         "toggle_pan" -> toggleTool(Tool.PAN)
         "toggle_eraser" -> toggleTool(Tool.ERASER)
         "toggle_previous" -> toggleToPreviousTool()
         else -> Unit
+        }
     }
 
     /** Arm [target], or if it is already armed, return to the previous tool (no-op if none yet). */
@@ -3860,6 +3900,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     }
 
     fun pickColor(index: Int) {
+        questionSession?.tools?.let { it.pickColor(index); return }
         activeColorIndex = index
         // pickInk also recolours the active text box (editing or selected), so the 5 toolbar
         // swatches double as the text colour control.
@@ -3906,6 +3947,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     // --- history ---
 
     fun undo() {
+        questionSession?.let { it.tools?.active?.undo(); return }
         flowText.flushBurst() // the open typing burst is the first thing Ctrl+Z takes back
         val command = history.nextUndo
         val pagesBefore = state.document.pages.size
@@ -3918,6 +3960,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     }
 
     fun redo() {
+        questionSession?.let { it.tools?.active?.redo(); return }
         flowText.flushBurst()
         val command = history.nextRedo
         val pagesBefore = state.document.pages.size
@@ -4263,7 +4306,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     var keyActions = KeyActions()
 
     fun handleKeyDown(e: android.view.KeyEvent): Boolean {
-        if (questionSession != null) return false
+        if (questionSession != null) return questionSession?.tools?.active?.handleKey(e) ?: false
         // A canvas is on top: it owns the keyboard, and understands only its own shortcuts.
         if (canvasOpen) return infinite.handleKeyDown(e)
         // A live flow caret session owns the keyboard first (Ctrl+B means bold here).
@@ -4739,9 +4782,9 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
      *  controller's held latch, and the vendor double-tap/click keycodes to their gesture handlers.
      *  Returns true when consumed, so the host swallows the key. */
     fun onStylusButtonKey(e: android.view.KeyEvent): Boolean {
-        if (questionSession != null) return false
         if (e.keyCode == penDoubleTapKeycode) return onPenDoubleTapKey(e)
         if (e.keyCode in penButtonTapKeycodes) return onPenButtonTapKey(e)
+        if (questionSession != null) return questionSession?.tools?.active?.stylusButton(e) ?: false
         val down = when (e.action) {
             android.view.KeyEvent.ACTION_DOWN -> true
             android.view.KeyEvent.ACTION_UP -> false

@@ -759,8 +759,11 @@ private fun EditorScreen(
             )
             val questionSession = focused.questionSession
             if (questionSession != null && focused.noteOpen) {
-                Box(Modifier.fillMaxSize().then(SwallowTouches)) {
-                    com.xnotes.ui.QuestionModeScreen(questionSession, focused::closeQuestionMode)
+                Column(Modifier.fillMaxSize().then(SwallowTouches)) {
+                    Toolbar(focused, onToggleFullscreen, focused::closeQuestionMode, {}, {})
+                    Box(Modifier.weight(1f)) {
+                        com.xnotes.ui.QuestionModeScreen(questionSession, focused::closeQuestionMode)
+                    }
                 }
             } else {
                 SplitHost(editor, actions)

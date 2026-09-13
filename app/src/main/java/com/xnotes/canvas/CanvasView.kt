@@ -424,9 +424,12 @@ class CanvasView @JvmOverloads constructor(
         invalidate()
     }
 
+    /** Ink-only overlay; the host renders the page background below this View. */
+    var transparentPaper: Boolean = false
+
     override fun onDraw(canvas: Canvas) {
         val st = state ?: return
-        canvas.drawColor(st.palette.bg.toArgb())
+        if (!transparentPaper) canvas.drawColor(st.palette.bg.toArgb())
 
         val r = AndroidRenderer(canvas)
         val origin = st.origin()
@@ -447,9 +450,9 @@ class CanvasView @JvmOverloads constructor(
             val page = st.document.pages[i]
             cachedPages.add(page)
 
-            r.fillRect(pr, st.paperColor(page))
+            if (!transparentPaper) r.fillRect(pr, st.paperColor(page))
             if (st.pageBorders) r.strokeRect(pr, border)
-            st.backgroundForOrSchedule(page)?.let { blitPageSurface(r, st, page, pr, it.surface) }
+            if (!transparentPaper) st.backgroundForOrSchedule(page)?.let { blitPageSurface(r, st, page, pr, it.surface) }
             // A live caret session lifts the flow out of the ink cache; paint it
             // immediate-mode here (under the ink, over the background) so every
             // keystroke shows without waiting for a cache rebuild.
@@ -486,7 +489,7 @@ class CanvasView @JvmOverloads constructor(
         // render with the content (so short pans stay sharp) and let the soft cache show only in
         // the strip panning into view; once the view settles we re-render the sharp viewport for
         // the new area. A zoom change drops back to the soft caches until the settle re-render.
-        if (st.isPastResolutionCap()) {
+        if (!transparentPaper && st.isPastResolutionCap()) {
             val blit = st.sharpViewportBlit()
             if (blit != null) {
                 val dw = blit.base.width * blit.scale

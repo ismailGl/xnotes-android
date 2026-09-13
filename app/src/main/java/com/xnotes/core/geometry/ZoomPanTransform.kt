@@ -28,15 +28,16 @@ data class ZoomPanTransform(
     fun gesture(centroid: Pt, pan: Pt, zoomFactor: Double): ZoomPanTransform {
         if (!listOf(centroid.x, centroid.y, pan.x, pan.y, zoomFactor).all { it.isFinite() } || zoomFactor <= 0) return this
         val nextZoom = (zoom * zoomFactor).coerceIn(1.0, MAX_ZOOM)
+        if (nextZoom == 1.0) return reset()
         val ratio = nextZoom / zoom
         val limitX = max(0.0, (contentWidth * fitScale * nextZoom - viewportWidth) / 2)
         val limitY = max(0.0, (contentHeight * fitScale * nextZoom - viewportHeight) / 2)
         return copy(zoom = nextZoom,
-            panX = (panX * ratio + (centroid.x - viewportWidth / 2) * (1 - ratio) + pan.x).coerceIn(-limitX, limitX),
-            panY = (panY * ratio + (centroid.y - viewportHeight / 2) * (1 - ratio) + pan.y).coerceIn(-limitY, limitY))
+            panX = if (limitX == 0.0) 0.0 else (panX * ratio + (centroid.x - viewportWidth / 2) * (1 - ratio) + pan.x).coerceIn(-limitX, limitX),
+            panY = if (limitY == 0.0) 0.0 else (panY * ratio + (centroid.y - viewportHeight / 2) * (1 - ratio) + pan.y).coerceIn(-limitY, limitY))
     }
 
-    fun visibleRect() = Rect.ltrb(
+    fun visibleRect() = if (zoom == 1.0) Rect(0.0, 0.0, contentWidth, contentHeight) else Rect.ltrb(
         (-left / scale).coerceIn(0.0, contentWidth),
         (-top / scale).coerceIn(0.0, contentHeight),
         ((viewportWidth - left) / scale).coerceIn(0.0, contentWidth),
