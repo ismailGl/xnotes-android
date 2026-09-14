@@ -2,19 +2,32 @@ package com.xnotes.ui
 
 import androidx.compose.runtime.*
 import com.xnotes.platform.QuestionSetRepository
+import com.xnotes.platform.QuestionProgress
+import com.xnotes.platform.QuestionProgressStore
+import com.xnotes.platform.QuestionProgressRepository
 import java.io.File
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
-/** Two independently persisted ink documents, with coordinated save-before-navigation. */
+/** Independent answers plus a shared notebook-page view, with save-before-navigation. */
 class QuestionSession(val set: QuestionSetRepository.LoadedSet, val sourcePdf: File,
     val answers: QuestionAnswerSession? = null,
     val annotations: QuestionAnswerSession? = null,
     val tools: QuestionTools? = null,
     private val scope: CoroutineScope = MainScope(),
+    private val progressStore: QuestionProgressStore? = null,
+    initialProgress: QuestionProgress = QuestionProgress(),
 ) {
-    var index by mutableIntStateOf(0)
+    var index by mutableIntStateOf(set.entries.indexOfFirst { it.question?.id == initialProgress.lastQuestionId && it.question != null }.coerceAtLeast(0))
         private set
+    private var progress by mutableStateOf(initialProgress)
+    private var savedProgress = initialProgress
+    private val progressWrites = Mutex()
+    var progressError by mutableStateOf<String?>(null)
+        private set
+    val selectedChoice get() = current?.question?.id?.let { progress.choices[it] }
     var split by mutableFloatStateOf(0.38f)
     private var transitioning by mutableStateOf(false)
     private var pendingBack: (() -> Unit)? = null
@@ -36,6 +49,7 @@ class QuestionSession(val set: QuestionSetRepository.LoadedSet, val sourcePdf: F
                 hosts.forEach { it.holdInput() }
                 var saved = true
                 for (host in hosts) if (!host.prepareTransition()) saved = false
+                if (!persistProgress()) saved = false
                 if (saved) action()
             } finally {
                 transitioning = false
@@ -47,17 +61,51 @@ class QuestionSession(val set: QuestionSetRepository.LoadedSet, val sourcePdf: F
         }
     }
     private fun move(target: Int) {
-        if (hosts.isEmpty()) { index = target; return }
+        if (hosts.isEmpty()) {
+            index = target
+            if (progressStore != null) scope.launch { persistProgress() }
+            return
+        }
         operation {
             hosts.forEach { it.switchTo(set.entries[target].question?.id) }
             settled()
             index = target
             tools?.refresh()
+            persistProgress()
         }
     }
     fun previous() { if (canPrevious) move(index - 1) }
     fun next() { if (canNext) move(index + 1) }
-    fun background() { hosts.forEach { it.background() } }
+    fun background() {
+        if (closed) return
+        hosts.forEach { it.background() }
+        if (progressStore != null) scope.launch { persistProgress() }
+    }
+    fun selectChoice(choice: String) {
+        require(choice in QuestionProgressRepository.CHOICES)
+        if (busy || closed) return
+        val id = current?.question?.id ?: return
+        val choices = progress.choices.toMutableMap()
+        if (choices[id] == choice) choices.remove(id) else choices[id] = choice
+        progress = progress.copy(choices = choices)
+        if (progressStore != null) scope.launch { persistProgress() }
+    }
+    fun retryProgress() { if (!busy && !closed) scope.launch { persistProgress() } }
+    private suspend fun persistProgress(): Boolean = progressWrites.withLock {
+        val store = progressStore ?: return@withLock true
+        val snapshot = progress.copy(lastQuestionId = current?.question?.id)
+        if (snapshot == savedProgress) return@withLock true
+        try {
+            store.save(snapshot)
+            savedProgress = snapshot
+            progressError = null
+            true
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) {
+            progressError = "Could not save the question position or choice. Retry before leaving."
+            false
+        }
+    }
     fun close(onClosed: () -> Unit) {
         if (closed) { onClosed(); return }
         if (transitioning) { pendingBack = onClosed; return }

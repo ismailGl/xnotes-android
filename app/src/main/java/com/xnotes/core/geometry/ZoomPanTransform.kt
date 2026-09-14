@@ -24,6 +24,10 @@ data class ZoomPanTransform(
 
     fun reset() = copy(zoom = 1.0, panX = 0.0, panY = 0.0)
 
+    /** Native pinch detectors report a moving focus as well as a change in span. */
+    fun pinch(previousFocus: Pt, focus: Pt, zoomFactor: Double) =
+        gesture(previousFocus, Pt(focus.x - previousFocus.x, focus.y - previousFocus.y), zoomFactor)
+
     /** Keep the content under the pinch centroid fixed, then apply pan and constrain the edges. */
     fun gesture(centroid: Pt, pan: Pt, zoomFactor: Double): ZoomPanTransform {
         if (!listOf(centroid.x, centroid.y, pan.x, pan.y, zoomFactor).all { it.isFinite() } || zoomFactor <= 0) return this

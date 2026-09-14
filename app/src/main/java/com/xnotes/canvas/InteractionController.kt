@@ -141,6 +141,8 @@ class InteractionController(
 
     /** The inline-flow caret controller; TEXT-tool gestures route here (installed by the Editor). */
     var flowText: FlowTextController? = null
+    /** Optional host viewport (e.g. PDF crop + annotation); deltas are scroll pixels. */
+    var panOverride: ((Double, Double) -> Unit)? = null
 
     /** Host hook for tap-to-open PDF links. A finger tap landed on page [pageIndex] at [pageLocal]
      *  (page-local content px). Returns true if it hit a known link and was handled, so the tap is
@@ -1152,6 +1154,7 @@ class InteractionController(
     private fun eraseAt(vx: Double, vy: Double) {
         eraserCursor = Pt(vx, vy)
         val content = state.viewportToContent(Pt(vx, vy))
+        if (state.pageCrop != null && state.pageIndexAtContent(content) == null) { requestRender(); return }
         val radius = eraserRadius()
         val eraserBox = Rect(content.x - radius, content.y - radius, radius * 2, radius * 2)
         val area = areaErase()
@@ -2419,6 +2422,12 @@ class InteractionController(
         trackVelocity(vx, vy)
         val dx = -(vx - lastPan.x)
         var dy = -(vy - lastPan.y)
+        panOverride?.let {
+            it(dx, dy)
+            lastPan = Pt(vx, vy)
+            requestRender()
+            return
+        }
         if (!state.verticalScroll) {
             extendPanPaginated(dx, dy)
             lastPan = Pt(vx, vy)
@@ -2554,6 +2563,7 @@ class InteractionController(
     }
 
     private fun startFling(fingerVel: Pt) {
+        if (panOverride != null) return // the host owns its viewport and settling behavior
         if (fingerVel.length() < FLING_MIN_START) return
         flingVel = Pt(-fingerVel.x, -fingerVel.y) // scroll moves opposite the finger
         flinging = true

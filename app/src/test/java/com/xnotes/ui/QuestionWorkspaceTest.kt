@@ -2,6 +2,11 @@ package com.xnotes.ui
 
 import androidx.compose.runtime.snapshots.Snapshot
 import com.xnotes.core.model.*
+import com.xnotes.core.history.History
+import com.xnotes.core.history.AddItem
+import com.xnotes.core.stroke.Sample
+import com.xnotes.core.tools.Tool
+import com.xnotes.core.tools.ToolDefaults
 import com.xnotes.platform.AnswerStore
 import com.xnotes.platform.QuestionSetRepository
 import java.io.File
@@ -21,19 +26,76 @@ class QuestionWorkspaceTest {
             saved += answerId
         }
     }
-    private class Surface(override val document: Document) : AnswerSurface {
+    private class Surface(override val document: Document, override val history: History = History(),
+        val changed: () -> Unit = {}) : AnswerSurface {
         override var inputEnabled = true
         var disposed = false
         var finished = 0
         override fun finishInput() { finished++ }
         override fun snapshot() = document.snapshot()
         override fun dispose() { disposed = true }
+        fun draw() {
+            val page = document.pages.single()
+            val stroke = Stroke(Tool.PEN, ToolDefaults.configFor(Tool.PEN), listOf(Sample(20.0, 30.0, 0.6)))
+            page.items.add(stroke)
+            history.push(AddItem(page, stroke))
+            changed()
+        }
     }
     private fun entries() = QuestionSetRepository.LoadedSet("set", "test", listOf("a", "b", "c").map {
         QuestionSetRepository.Entry(Question(it, 0, NormalizedRect(0.0, 0.0, 1.0, 1.0)))
     })
     private suspend fun until(predicate: () -> Boolean) = withTimeout(3000) {
         while (!predicate()) { Snapshot.sendApplyNotifications(); delay(1) }
+    }
+    @Test fun backDuringSwitchSavesBothLayersAndReentryRestoresTheirIndependentHistories() = runBlocking {
+        val work = CoroutineScope(coroutineContext + SupervisorJob())
+        fun child() = CoroutineScope(work.coroutineContext + SupervisorJob(work.coroutineContext[Job]))
+        val memory = QuestionHistoryCache()
+        val answerStore = Store()
+        val annotationStore = Store()
+        fun host(store: Store, area: String) = QuestionAnswerSession(store,
+            { d, h, changed -> Surface(d, h ?: History(), changed) }, child(),
+            memory = memory, memoryPrefix = "set/$area/")
+        try {
+            val answer = host(answerStore, "answers")
+            val annotation = host(annotationStore, "annotations")
+            val first = QuestionSession(entries(), File("source.pdf"), answer, annotation, scope = child())
+            until { !first.busy }
+            val a = answer.surface as Surface
+            val q = annotation.surface as Surface
+            a.draw(); q.draw()
+            annotationStore.gate = CompletableDeferred()
+            first.next()
+            var closed = false
+            first.close { closed = true }
+            assertFalse(closed)
+            annotationStore.gate!!.complete(Unit)
+            until { closed }
+            assertTrue(a.disposed && q.disposed)
+            assertNull(answer.surface)
+            assertNull(annotation.surface)
+            assertEquals(listOf("a", "b"), answerStore.saved)
+            assertEquals(listOf("a", "b"), annotationStore.saved)
+
+            val reopenedAnswer = host(answerStore, "answers")
+            val reopenedAnnotation = host(annotationStore, "annotations")
+            val second = QuestionSession(entries(), File("source.pdf"), reopenedAnswer, reopenedAnnotation, scope = child())
+            until { !second.busy }
+            val restoredA = reopenedAnswer.surface as Surface
+            val restoredQ = reopenedAnnotation.surface as Surface
+            assertSame(a.history, restoredA.history)
+            assertSame(q.history, restoredQ.history)
+            assertNotSame(restoredA.history, restoredQ.history)
+            restoredQ.history.undo(); restoredQ.changed()
+            assertTrue(restoredQ.document.pages.single().items.isEmpty())
+            assertEquals(1, restoredA.document.pages.single().items.size)
+            restoredQ.history.redo(); restoredQ.changed()
+            assertEquals(1, restoredQ.document.pages.single().items.size)
+            closed = false
+            second.close { closed = true }
+            until { closed }
+        } finally { work.cancel() }
     }
     @Test fun failedAnnotationSavePreventsBothCanvasesBeingReleasedAndBlocksBack() = runBlocking {
         val work = CoroutineScope(coroutineContext + SupervisorJob())

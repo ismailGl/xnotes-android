@@ -429,6 +429,13 @@ class CanvasView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         val st = state ?: return
+        val cropClip = st.pageCrop?.let { st.fromPageSpaceRect(0, it) }
+        val cropSave = if (cropClip != null) canvas.save() else null
+        cropClip?.let {
+            val a = st.contentToViewport(it.topLeft)
+            val b = st.contentToViewport(com.xnotes.core.geometry.Pt(it.right, it.bottom))
+            canvas.clipRect(a.x.toFloat(), a.y.toFloat(), b.x.toFloat(), b.y.toFloat())
+        }
         if (!transparentPaper) canvas.drawColor(st.palette.bg.toArgb())
 
         val r = AndroidRenderer(canvas)
@@ -581,6 +588,7 @@ class CanvasView @JvmOverloads constructor(
         // Debug HUD on top, reading the just-pruned cache state (viewport space).
         debugOverlay.sampleFrame(System.nanoTime())
         debugOverlay.draw(r, st)
+        if (cropSave != null) canvas.restoreToCount(cropSave)
     }
 
     /** Fires once the view has been still for [SHARP_SETTLE_MS], rendering the sharp viewport. */

@@ -304,6 +304,8 @@ private fun ToolButton(
             enabled = editor.questionSession?.busy != true,
             active = activeTool == tool && !(tool == Tool.SCREENSHOT && editor.questionSelection)) {
             if (activeTool == tool && (tool.isStroke || tool == Tool.SHAPE || tool == Tool.ERASER || tool == Tool.SELECT || tool == Tool.TEXT)) {
+                // Clicking the displayed fallback is an explicit shared-tool choice too.
+                if (tools?.usingFallback == true) editor.selectTool(tool)
                 setConfigForTool(tool)
             } else {
                 editor.selectTool(tool)

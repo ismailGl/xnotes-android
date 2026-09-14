@@ -34,6 +34,8 @@ class AnswerCanvasController(
     override val history: History = History(),
     val annotation: Boolean = false,
     private val onActive: (AnswerCanvasController) -> Unit = {},
+    private val canApplyHistory: (com.xnotes.core.history.Command?) -> Boolean = { true },
+    pageCrop: com.xnotes.core.geometry.Rect? = null,
 ) : AnswerSurface {
     val state = CanvasState(document, AndroidSurfaceFactory(), palette)
     val view = CanvasView(context).also { it.state = state }
@@ -44,16 +46,19 @@ class AnswerCanvasController(
     }
     var tool by mutableStateOf(Tool.PEN)
         private set
-    var canUndo by mutableStateOf(history.canUndo)
+    var canUndo by mutableStateOf(history.canUndo && canApplyHistory(history.nextUndo))
         private set
-    var canRedo by mutableStateOf(history.canRedo)
+    var canRedo by mutableStateOf(history.canRedo && canApplyHistory(history.nextRedo))
         private set
     override var inputEnabled = true
     private var disposed = false
     var viewportTouch: ((android.view.MotionEvent) -> Boolean)? = null
+    var gestureAction: ((String) -> Unit)? = null
+    var toolChanged: ((Tool) -> Unit)? = null
+    private var finishingInput = false
     val controller = InteractionController(state, history, AndroidTextMeasurer(),
         requestRender = { render() }, onContentChanged = { changed() },
-        onToolChanged = { tool = it })
+        onToolChanged = { tool = it; if (!finishingInput) toolChanged?.invoke(it) })
 
     init {
         configs.forEach { (tool, config) -> controller.setToolConfig(tool, config) }
@@ -72,7 +77,12 @@ class AnswerCanvasController(
                 viewportTouch?.invoke(it) ?: controller.onTouch(it)
             } else true
         }
-        view.hover = { if (inputEnabled && !disposed) controller.onHover(it) else true }
+        view.hover = {
+            if (inputEnabled && !disposed) {
+                if (it.actionMasked != android.view.MotionEvent.ACTION_HOVER_EXIT) onActive(this)
+                controller.onHover(it)
+            } else true
+        }
         view.genericMotion = { if (inputEnabled && !disposed) controller.onGenericMotion(it) }
         view.drawOverlay = { r, _ -> controller.drawOverlay(r) }
         controller.frontInk = FrontInk(state, view, pad)
@@ -81,6 +91,7 @@ class AnswerCanvasController(
         view.onThreeFingerTap = { gesture(preferences.threeFingerTap) }
         view.onKey = { handleKey(it) }
         if (annotation) {
+            state.pageCrop = pageCrop
             view.transparentPaper = true
             state.pageBorders = false
             state.didInitialFit = true
@@ -93,15 +104,23 @@ class AnswerCanvasController(
 
     private fun render() { if (!disposed && controller.frontInk?.live != true) view.requestRender() }
     private fun changed() {
-        canUndo = history.canUndo
-        canRedo = history.canRedo
+        canUndo = history.canUndo && canApplyHistory(history.nextUndo)
+        canRedo = history.canRedo && canApplyHistory(history.nextRedo)
         document.dirty = true
         onChanged()
     }
 
     fun select(tool: Tool) { if (inputEnabled) { finishInput(); controller.setTool(tool) } }
-    fun undo() { if (inputEnabled && history.canUndo) { finishInput(); history.undo(); afterHistory() } }
-    fun redo() { if (inputEnabled && history.canRedo) { finishInput(); history.redo(); afterHistory() } }
+    fun undo() {
+        if (!inputEnabled) return
+        finishInput()
+        if (history.canUndo && canApplyHistory(history.nextUndo)) { history.undo(); afterHistory() }
+    }
+    fun redo() {
+        if (!inputEnabled) return
+        finishInput()
+        if (history.canRedo && canApplyHistory(history.nextRedo)) { history.redo(); afterHistory() }
+    }
     private fun afterHistory() {
         controller.frontInk?.surfaceLost()
         state.refreshAllInk()
@@ -111,6 +130,7 @@ class AnswerCanvasController(
 
     fun gesture(action: String) {
         if (!inputEnabled) return
+        gestureAction?.let { it(action); return }
         when (action) {
             "undo" -> undo()
             "redo" -> redo()
@@ -133,7 +153,11 @@ class AnswerCanvasController(
     fun stylusButton(event: KeyEvent): Boolean = inputEnabled && controller.onStylusButtonKey(
         event.keyCode, event.action == KeyEvent.ACTION_DOWN)
 
-    override fun finishInput() { if (!disposed) controller.cancelForTransition() }
+    override fun finishInput() {
+        if (disposed) return
+        finishingInput = true
+        try { controller.cancelForTransition() } finally { finishingInput = false }
+    }
     override fun snapshot(): Document = document.snapshot()
     override fun dispose() {
         if (disposed) return
@@ -149,5 +173,8 @@ class AnswerCanvasController(
         view.hover = { true }
         view.genericMotion = null
         view.onKey = null
+        viewportTouch = null
+        gestureAction = null
+        toolChanged = null
     }
 }

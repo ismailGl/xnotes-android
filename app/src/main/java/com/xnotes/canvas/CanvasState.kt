@@ -588,14 +588,17 @@ class CanvasState(
 
     /** Optional host-owned viewport, used by the crop annotation overlay. */
     var externalOrigin: Pt? = null
+    /** Page-space crop for an ink-only view into a shared notebook page. */
+    var pageCrop: Rect? = null
 
     /** Map stable crop-page coordinates through the PDF viewer's uniform transform. */
     fun applyCropViewport(transform: com.xnotes.core.geometry.ZoomPanTransform) {
         val page = document.pages.single()
-        val pageOrigin = fromPageSpace(0, Pt(0.0, 0.0))
-        zoom = transform.scale * transform.contentWidth / page.width
+        val crop = pageCrop ?: Rect(0.0, 0.0, page.width, page.height)
+        val pageOrigin = fromPageSpace(0, crop.topLeft)
+        zoom = transform.scale * transform.contentWidth / crop.w
         externalOrigin = Pt(transform.left - pageOrigin.x * zoom, transform.top - pageOrigin.y * zoom)
-        minZoom = transform.fitScale * transform.contentWidth / page.width
+        minZoom = transform.fitScale * transform.contentWidth / crop.w
         maxZoom = minZoom * com.xnotes.core.geometry.ZoomPanTransform.MAX_ZOOM
         scrollX = 0.0
         scrollY = 0.0
@@ -692,6 +695,7 @@ class CanvasState(
     /** Index of the page whose rect contains a content-space point, or null. Hidden paginated
      *  neighbours never hit, so ink/erases/taps can't land on a page that isn't shown. */
     fun pageIndexAtContent(p: Pt): Int? {
+        pageCrop?.let { if (!it.contains(toPageSpace(0, p))) return null }
         val drawable = drawablePageRange()
         for (i in pageRects.indices) if (i in drawable && pageRects[i].contains(p)) return i
         return null

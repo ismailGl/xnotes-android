@@ -51,11 +51,14 @@ fun ZoomableQuestion(renderer: QuestionPdfRenderer, question: Question, pageSize
         if (viewport != null && annotation != null) {
             annotation.finishInput()
             annotation.viewportTouch = viewport::touch
+            annotation.controller.panOverride = viewport::pan
             annotation.view.afterLayout = { viewport.apply(transform) }
             viewport.apply(transform)
         }
         onDispose {
+            annotation?.finishInput()
             annotation?.viewportTouch = null
+            annotation?.controller?.panOverride = null
             annotation?.view?.afterLayout = null
         }
     }

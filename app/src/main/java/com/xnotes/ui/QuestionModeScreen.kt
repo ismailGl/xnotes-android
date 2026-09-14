@@ -18,6 +18,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import com.xnotes.platform.QuestionPdfRenderer
 import com.xnotes.ui.theme.LocalPalette
 import com.xnotes.ui.theme.toComposeColor
@@ -75,8 +77,24 @@ fun QuestionModeScreen(session: QuestionSession, onBack: () -> Unit) {
             }
             AnswerCanvasPane(answers, Modifier.weight(1f - session.split).fillMaxWidth())
         }
+        session.progressError?.let { error ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(error, Modifier.weight(1f), color = palette.text.toComposeColor())
+                TextButton(onClick = session::retryProgress, enabled = !session.busy) { Text("Retry") }
+            }
+        }
         Row(Modifier.fillMaxWidth().heightIn(min = 44.dp),
             horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            com.xnotes.platform.QuestionProgressRepository.CHOICES.forEach { choice ->
+                val chosen = session.selectedChoice == choice
+                TextButton(onClick = { session.selectChoice(choice) },
+                    enabled = !session.busy && session.current?.question != null,
+                    modifier = Modifier.width(48.dp).semantics { selected = chosen },
+                    contentPadding = PaddingValues(4.dp)) {
+                    Text(if (chosen) "● $choice" else choice)
+                }
+            }
+            Spacer(Modifier.weight(1f))
             TextButton(onClick = session::previous, enabled = session.canPrevious) { Text("◀ Previous") }
             Text("Question ${if (session.count == 0) 0 else session.index + 1} / ${session.count}",
                 Modifier.padding(horizontal = 16.dp), color = palette.text.toComposeColor())

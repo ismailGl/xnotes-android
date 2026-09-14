@@ -339,8 +339,8 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
      *  in place is only worth its (brief) window of an invalid file when the assets are the save. */
     private val MIN_SPLICE_BYTES = 1024L * 1024L
 
-    var tool by mutableStateOf(Tool.DEFAULT)
-        private set
+    private val sharedToolState = EditorToolState()
+    val tool get() = sharedToolState.tool
     var palette by mutableStateOf(state.palette)
         private set
     var zoomPercent by mutableStateOf(100)
@@ -444,8 +444,11 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     /** Viewport rect to anchor the screenshot tool's "copy as image" menu, or null when hidden. */
     var screenshotMenu by mutableStateOf<com.xnotes.core.geometry.Rect?>(null)
         private set
-    var questionSelection by mutableStateOf(false)
-        private set
+    var questionSelection: Boolean
+        get() = sharedToolState.addQuestion
+        private set(value) {
+            if (value) sharedToolState.selectQuestion() else sharedToolState.clearQuestionPurpose()
+        }
     var savingQuestion by mutableStateOf(false)
         private set
     var questionSession by mutableStateOf<QuestionSession?>(null)
@@ -463,7 +466,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     }
 
     fun openQuestionMode() {
-        if (openingQuestions || questionSession != null) return
+        if (openingQuestions || questionSession != null || opening) return
         val doc = state.document
         val uri = doc.path ?: return
         val pdf = doc.pdfFile ?: return
@@ -477,30 +480,37 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
                         val answerCodec = DocumentCodec(AndroidImageCodec(), AndroidTextMeasurer())
                         val root = java.io.File(appContext.filesDir, "questions")
                         val configs = ToolDefaults.persistedTools.associateWith { settings.configFor(it) }
-                        val tools = QuestionTools(configs, toolbarColors, activeColorIndex, recentColors)
+                        val tools = QuestionTools(configs, toolbarColors, activeColorIndex, recentColors, sharedToolState)
                         val store = com.xnotes.platform.QuestionAnswerRepository(root, set.id, answerCodec)
-                        val annotationStore = com.xnotes.platform.QuestionAnswerRepository(root, set.id, answerCodec,
-                            category = "annotations", blank = { id ->
-                                val question = set.entries.first { it.question?.id == id }.question!!
-                                val renderer = com.xnotes.platform.QuestionPdfRenderer(appContext, pdf)
-                                try {
-                                    val size = renderer.pageSize(question)
-                                    Document.blankPixels(width = (question.crop.right - question.crop.left) * size.first,
-                                        height = (question.crop.bottom - question.crop.top) * size.second)
-                                } finally { renderer.close() }
-                            })
-                        fun host(store: com.xnotes.platform.AnswerStore, annotation: Boolean) = QuestionAnswerSession(store,
+                        val progressStore = com.xnotes.platform.QuestionProgressRepository(root, set.id)
+                        val progress = progressStore.load()
+                        // The lookup above suspends; never bind shared pages after a document swap.
+                        if (state.document !== doc || !noteOpen || opening) return@launch
+                        sharedToolState.preserveDuringCleanup { controller.cancelForTransition() }
+                        controller.frontInk?.surfaceLost()
+                        val annotationStore = NotebookQuestionStore(doc, set.entries.mapNotNull { it.question }) {
+                            saveQuestionNotebook(doc)
+                        }
+                        val answers = QuestionAnswerSession(store,
                             { answer, retainedHistory, changed ->
-                                if (annotation) require(answer.pages.size == 1) { "Invalid annotation document" }
                                 AnswerCanvasController(viewContext, answer, buildPalette(settings.prefs), settings.prefs,
-                                    configs, tools.inkColor, changed, retainedHistory ?: History(), annotation,
+                                    configs, tools.inkColor, changed, retainedHistory ?: History(), false,
                                     tools::activate).also(tools::configure)
-                            }, memory = questionHistory, memoryPrefix = "${set.id}/${if (annotation) "annotations" else "answers"}/")
-                        val answers = host(store, false)
-                        val annotations = host(annotationStore, true)
+                            }, memory = questionHistory, memoryPrefix = "${set.id}/answers/")
+                        val annotations = QuestionAnswerSession(annotationStore, { pageView, _, changed ->
+                            val binding = requireNotNull(annotationStore.current)
+                            AnswerCanvasController(viewContext, pageView, buildPalette(settings.prefs), settings.prefs,
+                                configs, tools.inkColor, {
+                                    doc.dirty = true
+                                    state.invalidatePage(binding.page)
+                                    refreshContent()
+                                    changed()
+                                }, history, true, tools::activate, binding::canApply, binding.crop).also(tools::configure)
+                        })
                         tools.surfaces = { listOfNotNull(answers.surface as? AnswerCanvasController,
                             annotations.surface as? AnswerCanvasController) }
-                        questionSession = QuestionSession(set, pdf, answers, annotations, tools)
+                        questionSession = QuestionSession(set, pdf, answers, annotations, tools,
+                            progressStore = progressStore, initialProgress = progress)
                     }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
@@ -509,9 +519,33 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         }
     }
 
-    fun closeQuestionMode() {
-        val current = questionSession ?: return
-        current.close { if (questionSession === current) questionSession = null }
+    fun closeQuestionMode() = closeQuestionModeThen {}
+
+    private fun closeQuestionModeThen(afterClose: () -> Unit) {
+        val current = questionSession ?: run { afterClose(); return }
+        current.close {
+            if (questionSession === current) {
+                questionSession = null
+                sharedToolState.preserveDuringCleanup { controller.setTool(sharedToolState.tool) }
+                refreshContent()
+                view.requestRender()
+                afterClose()
+            }
+        }
+    }
+
+    /** Use the normal guarded writer, including its conflict checks, for shared-page ink. */
+    private suspend fun saveQuestionNotebook(doc: Document) {
+        check(state.document === doc) { "The notebook session changed" }
+        noteDebounceJob?.cancel()
+        noteWriteJob?.join()
+        check(state.document === doc) { "The notebook session changed" }
+        if (!doc.dirty) return
+        val uri = autosaveUri ?: doc.path ?: error("Save the notebook first")
+        var succeeded = false
+        startNoteWrite(uri, doc.snapshot(), doc.title, System.nanoTime(), onResult = { succeeded = it })
+        noteWriteJob?.join()
+        check(succeeded) { "Could not save the notebook" }
     }
 
     /** Long-press paste context menu target, or null when hidden. */
@@ -608,7 +642,10 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         uri: String?,
         displayName: String?,
     ) {
-        closeQuestionMode()
+        if (questionSession != null) {
+            closeQuestionModeThen { openCanvasDocument(doc, uri, displayName) }
+            return
+        }
         flushAutosave() // a paged note may be open underneath; do not leave its edits unwritten
         doc.path = uri
         doc.displayName = displayName
@@ -775,7 +812,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         onFitWidthSnapped = { showZoomLockHint() },
         onFitWidthReleased = { hideZoomLockHint() },
         onSelectionChanged = { selected -> hasSelection = selected; refreshTextBar() },
-        onToolChanged = { t -> tool = t; questionSelection = false },
+        onToolChanged = sharedToolState::engineChanged,
         onTextEditStart = { field -> editingField = field; refreshTextBar() },
         onTextEditEnd = { editingField = null; refreshTextBar() },
         onSelectionMenu = { rect -> selectionMenu = rect },
@@ -2282,6 +2319,10 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
      * ignored, so two reads never race to swap in a document.
      */
     suspend fun openAsync(uri: String, name: String? = null) {
+        if (questionSession != null) {
+            closeQuestionModeThen { autosaveScope.launch { openAsync(uri, name) } }
+            return
+        }
         if (opening) return
         openCancelled.set(false)
         opening = true
@@ -3356,6 +3397,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         snapshot: Document,
         title: String,
         startNs: Long,
+        onResult: ((Boolean) -> Unit)? = null,
         onDone: (() -> Unit)? = null,
     ) {
         val doc = state.document
@@ -3387,8 +3429,9 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
                     " of which deflate ${state.lastSaveDeflateMs} over" +
                     " ${state.lastSaveManifestBytes} raw bytes, assets ${state.lastSaveAssetsMs})" +
                     " + saf ${state.lastSaveCopyMs}" +
-                    ", ${state.lastSaveBytes} bytes, ${res != null}",
+                ", ${state.lastSaveBytes} bytes, ${res != null}",
             )
+            onResult?.invoke(res != null)
             onDone?.invoke()
         }
     }
@@ -3836,7 +3879,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     }
 
     private fun replaceDocument(doc: Document) {
-        closeQuestionMode()
+        check(questionSession == null) { "Close Question Mode before replacing its notebook" }
         questionSelection = false
         controller.clearScreenshot()
         saveViewState() // remember the outgoing folder note's view before switching away
@@ -3867,9 +3910,8 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
 
     fun selectTool(t: Tool) {
         questionSession?.tools?.let { it.select(t); return }
-        questionSelection = false
+        sharedToolState.select(t)
         controller.setTool(t)
-        tool = t
     }
 
     /** Run the action a two/three-finger tap or stylus double-tap is mapped to; "none" does nothing. */
@@ -4834,7 +4876,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     }
 
     fun newNote() {
-        closeQuestionMode()
+        if (questionSession != null) { closeQuestionModeThen(::newNote); return }
         questionSelection = false
         controller.clearScreenshot()
         saveViewState()
@@ -4946,7 +4988,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     /** Pop back to backstage: detach the current note (flush autosave, drop the binding) and clear
      *  [noteOpen] so the editor is removed from the stack. The document stays as an inert buffer. */
     fun goHome() {
-        closeQuestionMode()
+        if (questionSession != null) { closeQuestionModeThen(::goHome); return }
         questionSelection = false
         controller.clearScreenshot()
         if (!noteOpen) return

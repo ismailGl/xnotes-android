@@ -7,14 +7,16 @@ import com.xnotes.core.tools.*
 /** Same popup contract as Editor, with command routing owned by Question Mode. */
 class QuestionTools(configs: Map<Tool, ToolConfig>, colors: List<Rgba>, colorIndex: Int,
     override val hostRecentColors: List<Rgba>,
+    private val selection: EditorToolState = EditorToolState(),
 ) : ToolPopupHost {
     private val configs = configs.toMutableMap()
     var surfaces: () -> List<AnswerCanvasController> = { emptyList() }
-    private var touched by mutableStateOf<AnswerCanvasController?>(null)
-    val active get() = touched?.takeIf { it in surfaces() } ?: surfaces().firstOrNull()
-    var selected by mutableStateOf(Tool.PEN)
-        private set
-    val tool get() = active?.tool ?: selected
+    private var annotationActive by mutableStateOf(false)
+    val active get() = surfaces().firstOrNull { it.annotation == annotationActive } ?: surfaces().firstOrNull()
+    private var projecting = false
+    val selected get() = selection.questionTool
+    val tool get() = selected
+    val usingFallback get() = !EditorToolState.supported(selection.tool)
     override var hostToolbarColors by mutableStateOf(colors)
         private set
     override var hostActiveColorIndex by mutableIntStateOf(colorIndex)
@@ -22,16 +24,43 @@ class QuestionTools(configs: Map<Tool, ToolConfig>, colors: List<Rgba>, colorInd
     override var hostShapeConfig by mutableStateOf(ShapeConfig())
         private set
     val inkColor get() = hostToolbarColors[hostActiveColorIndex]
-    fun activate(canvas: AnswerCanvasController) { touched = canvas }
-    fun select(tool: Tool) { selected = tool; surfaces().forEach { it.select(tool) } }
+    fun activate(canvas: AnswerCanvasController) { annotationActive = canvas.annotation }
+    fun select(tool: Tool) {
+        if (!EditorToolState.supported(tool)) return
+        selection.select(tool)
+        project { surfaces().forEach { it.select(selected) } }
+    }
+    private fun project(block: () -> Unit) {
+        val previous = projecting
+        projecting = true
+        try { block() } finally { projecting = previous }
+    }
     fun pickColor(index: Int) { hostActiveColorIndex = index; surfaces().forEach { it.controller.pickInk(inkColor) } }
     fun configure(canvas: AnswerCanvasController) {
+        canvas.toolChanged = { tool ->
+            if (!projecting && EditorToolState.supported(tool)) {
+                selection.select(tool)
+                project { surfaces().filter { it !== canvas }.forEach { it.select(selected) } }
+            }
+        }
+        canvas.gestureAction = ::gesture
         configs.forEach { (tool, config) -> canvas.controller.setToolConfig(tool, config) }
         canvas.controller.inkColor = inkColor
         canvas.controller.shapeConfig = hostShapeConfig
-        canvas.select(selected)
+        project { canvas.select(selected) }
     }
     fun refresh() { surfaces().forEach(::configure) }
+    fun gesture(action: String) {
+        val canvas = active ?: return
+        if (!canvas.inputEnabled) return
+        when (action) {
+            "undo" -> canvas.undo()
+            "redo" -> canvas.redo()
+            "toggle_eraser" -> select(if (tool == Tool.ERASER) Tool.PEN else Tool.ERASER)
+            "toggle_pan" -> select(if (tool == Tool.PAN) Tool.PEN else Tool.PAN)
+            "toggle_previous" -> canvas.controller.previousTool?.let(::select)
+        }
+    }
     override fun toolConfig(tool: Tool) = configs[tool] ?: ToolDefaults.configFor(tool)
     override fun updateToolConfig(tool: Tool, config: ToolConfig) {
         configs[tool] = config

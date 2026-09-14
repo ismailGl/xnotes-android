@@ -4,6 +4,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ZoomPanTransformTest {
+    @Test fun pinchFollowsMovingFocusWhileZoomingAndWithConstantSpan() {
+        val fit = ZoomPanTransform(1000.0, 1000.0, 1000.0, 1000.0)
+        val oldFocus = Pt(400.0, 450.0)
+        val focus = Pt(470.0, 490.0)
+        val zoomed = fit.pinch(oldFocus, focus, 2.0)
+        assertEquals(focus.x, zoomed.left + oldFocus.x * zoomed.scale, 1e-8)
+        assertEquals(focus.y, zoomed.top + oldFocus.y * zoomed.scale, 1e-8)
+        val next = Pt(490.0, 460.0)
+        val panned = zoomed.pinch(focus, next, 1.0)
+        assertEquals(next.x, panned.left + oldFocus.x * panned.scale, 1e-8)
+        assertEquals(next.y, panned.top + oldFocus.y * panned.scale, 1e-8)
+    }
     @Test fun tallAndWideQuestionsFitCompletelyAndAreCentered() {
         for ((w, h) in listOf(100.0 to 2000.0, 2000.0 to 100.0, 600.0 to 800.0)) {
             val v = ZoomPanTransform(w, h, 1200.0, 700.0)
