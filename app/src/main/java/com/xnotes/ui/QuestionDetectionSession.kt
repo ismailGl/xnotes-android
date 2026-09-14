@@ -17,6 +17,7 @@ class QuestionDetectionSession(
 ) {
     var proposals by mutableStateOf<List<DetectedQuestion>>(emptyList()); private set
     var pages by mutableStateOf<List<Int>>(emptyList()); private set
+    var pageSources by mutableStateOf<Map<Int, QuestionTextSource>>(emptyMap()); private set
     var busy by mutableStateOf(false); private set
     var saving by mutableStateOf(false); private set
     var status by mutableStateOf("Choose PDF pages to scan"); private set
@@ -28,9 +29,11 @@ class QuestionDetectionSession(
         if (busy || saving) return
         val targets = requested.distinct().sorted()
         if (targets.isEmpty() || targets.any { it !in availablePages }) { status = "Choose PDF-backed pages from this notebook"; return }
+        pageSources = emptyMap()
         busy = true; proposals = emptyList(); pages = targets; errors = emptyList(); sourceId = null
         job = scope.launch {
             try {
+                val scanContext = currentCoroutineContext()
                 val identity = withContext(Dispatchers.IO) { repository.identity(uri, pdf) }
                 existing = withContext(Dispatchers.IO) { repository.find(uri, pdf)?.entries?.mapNotNull { it.question } ?: emptyList() }
                 var extractor: QuestionPageReader? = null
@@ -40,11 +43,15 @@ class QuestionDetectionSession(
                     for ((i, page) in targets.withIndex()) {
                         ensureActive(); status = "Scanning ${i + 1} / ${targets.size} · PDF page ${page + 1}"
                         try {
-                            val detected = withContext(Dispatchers.IO) {
-                                val data = reader.page(page)
-                                QuestionLayoutDetector.detect(page, data.runs, data.layout)
+                            val (data, detected) = withContext(Dispatchers.IO) {
+                                val data = reader.page(page) { phase ->
+                                    withContext(scanContext) { status = "${i + 1} / ${targets.size} · PDF page ${page + 1} · $phase" }
+                                }
+                                ensureActive()
+                                data to QuestionLayoutDetector.detect(page, data.runs, data.layout)
                             }
-                            if (detected.isEmpty()) errors = errors + "Page ${page + 1}: no numbered questions found. Scanned/image-only PDFs need manual rectangles; OCR is not available."
+                            pageSources = pageSources + (page to data.textSource)
+                            if (detected.isEmpty()) errors = errors + "Page ${page + 1}: no numbered questions found. Add rectangles manually or try a clearer scan."
                             proposals = proposals + detected.map { it.copy(id = UUID.randomUUID().toString(),
                                 reasons = it.reasons + when {
                                     duplicate(page,it.crop) -> listOf("Overlaps an existing question; duplicate will be skipped")
@@ -52,12 +59,12 @@ class QuestionDetectionSession(
                                     else -> emptyList()
                                 }) }
                         } catch (e: CancellationException) { throw e }
-                        catch (_: Exception) { errors = errors + "Page ${page + 1}: text/layout extraction failed; add rectangles manually" }
+                        catch (_: Exception) { errors = errors + "Page ${page + 1}: PDF text/OCR/layout extraction failed; add rectangles manually" }
                     }
                     sourceId = identity
                     status = "${proposals.size} proposals · review before adding"
                 } finally { withContext(NonCancellable + Dispatchers.IO) { extractor?.close() } }
-            } catch (e: CancellationException) { throw e }
+            } catch (e: CancellationException) { status = "Scan cancelled"; throw e }
             catch (_: OutOfMemoryError) { status = "Not enough memory to scan this PDF. Try a smaller page range." }
             catch (_: Exception) { status = "Could not scan this PDF. Check the source and saved question metadata." }
             finally { busy = false }

@@ -45,6 +45,28 @@ class QuestionLayoutDetectorTest {
         val runs = listOf(line("1",0.1,0.1,0.105),line(".",0.105,0.1,0.108),line("Soru",0.112,0.1,0.2))
         assertEquals(1,QuestionLayoutDetector.detect(0,runs,layout()).size)
     }
+    @Test fun ocrWordBoxesWithSkewAndSpacedPunctuationFormAnchors() {
+        val runs = listOf(line("12",0.08,0.102,0.10), line(".",0.104,0.1,0.11),
+            line("Cozunuz",0.118,0.101,0.3), line("A)",0.08,0.2,0.11),
+            line("Soru",0.08,0.5,0.12), line("3",0.127,0.501,0.14))
+        assertEquals(2,QuestionLayoutDetector.detect(0,runs,layout()).size)
+    }
+    @Test fun rasterMovesBoundaryAwayFromInkWithoutDiscardingDiagram() {
+        val image=layout()
+        for (y in 480..497) for (x in 100..400) image.ink[y*1000+x]=true
+        val detected=QuestionLayoutDetector.detect(0,listOf(line("1) Ciziniz",0.08,0.1),line("2. Cozunuz",0.08,0.52)),image)
+        assertTrue(detected.first().crop.bottom > 0.497)
+        for (y in 513..516) for (x in 100..400) image.ink[y*1000+x]=true
+        val adjusted=QuestionLayoutDetector.detect(0,listOf(line("1) Ciziniz",0.08,0.1),line("2. Cozunuz",0.08,0.52)),image)
+        assertNotEquals(0.514,adjusted.first().crop.bottom,0.0001)
+    }
+    @Test fun columnWithoutRecognizedNumberStillConstrainsOtherColumn() {
+        val detected=QuestionLayoutDetector.detect(0,listOf(line("1. Soru",0.06,0.1,0.44),
+            line("A) Bir",0.06,0.3,0.44),line("Okunamayan soru",0.58,0.15,0.94),
+            line("B) Iki",0.58,0.3,0.94)),layout())
+        assertEquals(1,detected.size)
+        assertTrue(detected.single().crop.right in 0.45..0.57)
+    }
     @Test fun rectangleEditsStayInBoundsAndDoNotInvert() {
         val r=NormalizedRect(0.2,0.3,0.6,0.7)
         val moved=ProposalGeometry.move(r,4.0,-4.0)

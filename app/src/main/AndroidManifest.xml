@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Bundled OCR needs no network; also prevent transitive SDK telemetry access. -->
+    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
 
     <!-- The infinite canvas renders on GLES 3.0. Not required: the paged notebook does not use
          it, so a device without it keeps the rest of the app. -->

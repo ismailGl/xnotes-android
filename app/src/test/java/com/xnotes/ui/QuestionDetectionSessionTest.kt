@@ -17,12 +17,13 @@ class QuestionDetectionSessionTest {
         @Volatile var started=false
         var failPage: Int?=null
         var pause=false
-        override fun page(index: Int): PdfTextExtractor.PageData {
+        override suspend fun page(index: Int, progress: suspend (String) -> Unit): PdfTextExtractor.PageData {
             started=true
             if(pause) Thread.sleep(80)
             if(index == failPage) error("Malformed page")
             return PdfTextExtractor.PageData(listOf(QuestionLayoutDetector.TextRun("1. Soru",NormalizedRect(0.1,0.1,0.8,0.12))),
-                QuestionLayoutDetector.Layout(100,100,BooleanArray(10000)))
+                QuestionLayoutDetector.Layout(100,100,BooleanArray(10000)),
+                if (index == 0) QuestionTextSource.PDF_TEXT else QuestionTextSource.OCR)
         }
         override fun close() { closed=true }
     }
@@ -35,6 +36,8 @@ class QuestionDetectionSessionTest {
             session.scan(listOf(0,2))
             until { !session.busy }
             assertTrue(reader.closed); assertEquals(2,session.proposals.size)
+            assertEquals(QuestionTextSource.PDF_TEXT,session.pageSources[0])
+            assertEquals(QuestionTextSource.OCR,session.pageSources[2])
             assertEquals(0,dir.listFiles()!!.size)
             val first=session.proposals.first()
             session.accept(first.id,true)

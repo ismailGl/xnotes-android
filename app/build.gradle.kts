@@ -23,6 +23,7 @@ android {
 
     defaultConfig {
         applicationId = "com.xnotes"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         minSdk = 26
         targetSdk = 36
         versionCode = 54
@@ -121,9 +122,13 @@ dependencies {
     implementation(libs.androidx.material.icons.extended)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.pdfbox.android)
+    // Bundled Latin model: available on first launch, including offline Turkish OCR.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation(libs.androidsvg)
     debugImplementation(libs.androidx.ui.tooling)
 
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation(libs.junit)
     testImplementation(libs.junit)
     testImplementation(libs.json)
 }

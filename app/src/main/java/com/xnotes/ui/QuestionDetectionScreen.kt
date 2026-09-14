@@ -81,7 +81,8 @@ fun QuestionDetectionScreen(editor: Editor) {
                 val proposal = session.proposals.firstOrNull { it.id == selected }
                 Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { pageSlot--; selected = null }, enabled = pageSlot > 0 && !session.saving) { Text("◀ Page") }
-                    Text(if (page == null) "No preview" else "PDF page ${page + 1}")
+                    Text(if (page == null) "No preview" else "PDF page ${page + 1}" +
+                        (session.pageSources[page]?.let { " � ${it.label}" } ?: ""))
                     TextButton(onClick = { pageSlot++; selected = null }, enabled = pageSlot + 1 < session.pages.size && !session.saving) { Text("Page ▶") }
                     TextButton(onClick = { edit = !edit; add = false }, enabled = !session.busy && !session.saving) { Text(if (edit) "Edit rectangles ✓" else "Pan / zoom ✓ · Edit") }
                     TextButton(onClick = { edit = true; add = true; selected = null }, enabled = page != null && !session.busy && !session.saving) { Text(if (add) "Draw a rectangle…" else "Add rectangle") }
