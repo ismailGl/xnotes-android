@@ -8,6 +8,33 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class QuestionProgressSessionTest {
+    @Test fun questionTypesAndCountsPersistIndependentlyAndClearIncompatibleChoices() = runBlocking {
+        val store = Store()
+        val work = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            val session = QuestionSession(entries(), File("pdf"), scope = work, progressStore = store)
+            session.setAnswerOptions(QuestionAnswerOptions(optionCount = 8))
+            session.selectChoice("H")
+            until { store.state.choices["a"] == "H" }
+            session.next()
+            assertEquals(5, session.answerOptions.optionCount)
+            session.selectChoice("B")
+            session.previous()
+            assertEquals("H", session.selectedChoice)
+            session.setAnswerOptions(QuestionAnswerOptions(optionCount = 2))
+            assertNull(session.selectedChoice)
+            session.selectChoice("A")
+            session.setAnswerOptions(QuestionAnswerOptions(QuestionType.OPEN_ENDED, 2))
+            assertNull(session.selectedChoice)
+            assertTrue(session.answerOptions.choices.isEmpty())
+            until { store.state.optionsFor("a").type == QuestionType.OPEN_ENDED && store.state.choices["a"] == null }
+            val restored = QuestionSession(entries(), File("pdf"), scope = work, initialProgress = store.load())
+            assertEquals(QuestionType.OPEN_ENDED, restored.answerOptions.type)
+            restored.next()
+            assertEquals("B", restored.selectedChoice)
+            assertEquals(5, restored.answerOptions.optionCount)
+        } finally { work.cancel() }
+    }
     private class Store : QuestionProgressStore {
         var state = QuestionProgress()
         var fail = false

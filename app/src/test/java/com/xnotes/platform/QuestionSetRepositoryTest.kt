@@ -8,6 +8,29 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
 class QuestionSetRepositoryTest {
+    @Test fun batchSkipsGeometricDuplicatesAndPreservesExistingIdsAndSidecars() {
+        val dir=temp.newFolder(); val pdf=temp.newFile().apply { writeText("pdf") }
+        val repo=QuestionSetRepository(dir)
+        val first=repo.append("uri","Title",pdf,question("manual"))
+        val sidecar=java.io.File(dir,"${first.id}/state.json").apply { parentFile!!.mkdirs(); writeText("existing choices") }
+        val answer=java.io.File(dir,"${first.id}/answers/manual.xnote").apply { parentFile!!.mkdirs(); writeText("ink") }
+        val new=Question("new",5,question("x").crop)
+        val batch=repo.appendBatch("uri","Title",pdf,listOf(question("duplicate"),new,new.copy(id="other")),first.id)
+        assertEquals(listOf("manual","new"),batch.questions.map { it.id })
+        assertEquals("existing choices",sidecar.readText()); assertEquals("ink",answer.readText())
+        val bytes=java.io.File(dir,"${first.id}.json").readBytes()
+        pdf.writeText("replacement")
+        assertThrows(IllegalArgumentException::class.java) { repo.appendBatch("uri","Title",pdf,listOf(new),first.id) }
+        assertArrayEquals(bytes,java.io.File(dir,"${first.id}.json").readBytes())
+        assertEquals(1,dir.listFiles()!!.count { it.extension == "json" })
+    }
+    @Test fun emptyBatchAndIdentityLookupNeverCreateSet() {
+        val dir=temp.newFolder(); val pdf=temp.newFile()
+        val repo=QuestionSetRepository(dir)
+        repo.identity("uri",pdf)
+        repo.appendBatch("uri","Title",pdf,emptyList())
+        assertEquals(0,dir.listFiles()!!.size)
+    }
     @get:Rule val temp = TemporaryFolder()
     private fun question(id: String) = Question(id, 4, NormalizedRect(0.1, 0.2, 0.8, 0.9))
 

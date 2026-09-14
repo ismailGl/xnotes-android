@@ -197,6 +197,8 @@ private fun ToolbarItemView(
                     modifier = Modifier.clip(RoundedCornerShape(4.dp))
                         .clickable { editor.startQuestionSelection() })
                 QuestionModeEntry(editor)
+                Label("Auto Detect", modifier = Modifier.clip(RoundedCornerShape(4.dp))
+                    .clickable { editor.startQuestionDetection() })
             }
         }
 
@@ -271,7 +273,7 @@ private fun ToolbarItemView(
 private fun QuestionModeEntry(editor: Editor) {
     val doc = editor.state.document
     var available by remember(doc, doc.path) { mutableStateOf(false) }
-    LaunchedEffect(doc, doc.path, editor.savingQuestion) {
+    LaunchedEffect(doc, doc.path, editor.savingQuestion, editor.questionRevision) {
         if (!editor.savingQuestion) {
             try { available = editor.findQuestions(doc) != null }
             catch (e: kotlinx.coroutines.CancellationException) { throw e }

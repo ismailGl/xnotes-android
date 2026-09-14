@@ -42,15 +42,28 @@ class QuestionSetRepository(private val directory: File) {
     }
 
     fun append(notebookUri: String, title: String, pdf: File, question: Question): QuestionSet {
+        return appendBatch(notebookUri, title, pdf, listOf(question), deduplicate = false)
+    }
+
+    /** One identity verification and atomic write. Existing question identities are never replaced. */
+    fun appendBatch(notebookUri: String, title: String, pdf: File, questions: List<Question>,
+                    expectedSourceId: String? = null, deduplicate: Boolean = true): QuestionSet {
         require(notebookUri.isNotBlank()) { "Save the notebook before adding questions" }
         val (id, hash) = sourceIdentity(notebookUri, pdf)
+        require(expectedSourceId == null || expectedSourceId == id) { "The source PDF changed; scan again" }
         // Both split panes may append to the same set through different repository instances.
         synchronized(writeLock) {
             val file = File(directory, "$id.json")
             val old = if (file.exists()) decode(file.readText(Charsets.UTF_8)) else
                 QuestionSet(id, title, emptyList(), notebookUri, hash)
             require(old.id == id && old.sourceNotebookUri == notebookUri && old.sourcePdfSha256 == hash)
-            val updated = old.copy(title = title, questions = old.questions + question)
+            val accepted = old.questions.toMutableList()
+            questions.forEach { question ->
+                if (accepted.none { it.id == question.id || (deduplicate && it.sourcePageIndex == question.sourcePageIndex &&
+                    com.xnotes.core.model.QuestionOverlap.duplicate(it.crop, question.crop)) }) accepted += question
+            }
+            if (accepted.size == old.questions.size) return old
+            val updated = old.copy(title = title, questions = accepted)
             Files.createDirectories(directory.toPath())
             val temp = File.createTempFile("question-", ".tmp", directory)
             try {
@@ -63,6 +76,9 @@ class QuestionSetRepository(private val directory: File) {
             return updated
         }
     }
+
+    /** Capture identity even when no set exists yet; never creates a file. */
+    fun identity(notebookUri: String, pdf: File): String = sourceIdentity(notebookUri, pdf).first
 
     private fun sourceIdentity(notebookUri: String, pdf: File): Pair<String, String> {
         val digest = MessageDigest.getInstance("SHA-256")

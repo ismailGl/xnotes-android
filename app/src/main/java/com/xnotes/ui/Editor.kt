@@ -454,6 +454,19 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     var questionSession by mutableStateOf<QuestionSession?>(null)
         private set
     private val questionHistory = QuestionHistoryCache()
+    var questionDetectionOpen by mutableStateOf(false)
+    var questionRevision by mutableStateOf(0)
+    fun startQuestionDetection() {
+        if (opening || questionSession != null) return
+        if (!state.document.hasPdf || state.document.path == null) { message = "Save a PDF-backed notebook first"; return }
+        sharedToolState.preserveDuringCleanup { controller.cancelForTransition() }
+        questionDetectionOpen = true
+    }
+    fun closeQuestionDetection() {
+        questionDetectionOpen = false
+        sharedToolState.preserveDuringCleanup { controller.setTool(sharedToolState.tool) }
+        view.requestRender()
+    }
     var openingQuestions by mutableStateOf(false)
         private set
 
@@ -4348,6 +4361,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     var keyActions = KeyActions()
 
     fun handleKeyDown(e: android.view.KeyEvent): Boolean {
+        if (questionDetectionOpen) return false
         if (questionSession != null) return questionSession?.tools?.active?.handleKey(e) ?: false
         // A canvas is on top: it owns the keyboard, and understands only its own shortcuts.
         if (canvasOpen) return infinite.handleKeyDown(e)
@@ -4824,6 +4838,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
      *  controller's held latch, and the vendor double-tap/click keycodes to their gesture handlers.
      *  Returns true when consumed, so the host swallows the key. */
     fun onStylusButtonKey(e: android.view.KeyEvent): Boolean {
+        if (questionDetectionOpen) return false
         if (e.keyCode == penDoubleTapKeycode) return onPenDoubleTapKey(e)
         if (e.keyCode in penButtonTapKeycodes) return onPenButtonTapKey(e)
         if (questionSession != null) return questionSession?.tools?.active?.stylusButton(e) ?: false

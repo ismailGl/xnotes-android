@@ -758,6 +758,7 @@ private fun EditorScreen(
                 onSavePagesAsImages = { pane, pages -> savePagesAsImages(pane, pages) },
             )
             val questionSession = focused.questionSession
+            if (focused.questionDetectionOpen) com.xnotes.ui.QuestionDetectionScreen(focused)
             if (questionSession != null && focused.noteOpen) {
                 Column(Modifier.fillMaxSize().then(SwallowTouches)) {
                     Toolbar(focused, onToggleFullscreen, focused::closeQuestionMode, {}, {})

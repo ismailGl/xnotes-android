@@ -4,7 +4,7 @@ import androidx.compose.runtime.*
 import com.xnotes.platform.QuestionSetRepository
 import com.xnotes.platform.QuestionProgress
 import com.xnotes.platform.QuestionProgressStore
-import com.xnotes.platform.QuestionProgressRepository
+import com.xnotes.platform.QuestionAnswerOptions
 import java.io.File
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
@@ -28,6 +28,7 @@ class QuestionSession(val set: QuestionSetRepository.LoadedSet, val sourcePdf: F
     var progressError by mutableStateOf<String?>(null)
         private set
     val selectedChoice get() = current?.question?.id?.let { progress.choices[it] }
+    val answerOptions get() = current?.question?.id?.let(progress::optionsFor) ?: QuestionAnswerOptions()
     var split by mutableFloatStateOf(0.38f)
     private var transitioning by mutableStateOf(false)
     private var pendingBack: (() -> Unit)? = null
@@ -82,7 +83,7 @@ class QuestionSession(val set: QuestionSetRepository.LoadedSet, val sourcePdf: F
         if (progressStore != null) scope.launch { persistProgress() }
     }
     fun selectChoice(choice: String) {
-        require(choice in QuestionProgressRepository.CHOICES)
+        require(choice in answerOptions.choices)
         if (busy || closed) return
         val id = current?.question?.id ?: return
         val choices = progress.choices.toMutableMap()
@@ -91,6 +92,13 @@ class QuestionSession(val set: QuestionSetRepository.LoadedSet, val sourcePdf: F
         if (progressStore != null) scope.launch { persistProgress() }
     }
     fun retryProgress() { if (!busy && !closed) scope.launch { persistProgress() } }
+    fun setAnswerOptions(options: QuestionAnswerOptions) {
+        if (busy || closed) return
+        val id = current?.question?.id ?: return
+        val choices = progress.choices.filterNot { (key, choice) -> key == id && choice !in options.choices }
+        progress = progress.copy(choices = choices, answerOptions = progress.answerOptions + (id to options))
+        if (progressStore != null) scope.launch { persistProgress() }
+    }
     private suspend fun persistProgress(): Boolean = progressWrites.withLock {
         val store = progressStore ?: return@withLock true
         val snapshot = progress.copy(lastQuestionId = current?.question?.id)
@@ -102,7 +110,7 @@ class QuestionSession(val set: QuestionSetRepository.LoadedSet, val sourcePdf: F
             true
         } catch (e: CancellationException) { throw e }
         catch (_: Exception) {
-            progressError = "Could not save the question position or choice. Retry before leaving."
+            progressError = "Could not save the question position, type or choice. Retry before leaving."
             false
         }
     }

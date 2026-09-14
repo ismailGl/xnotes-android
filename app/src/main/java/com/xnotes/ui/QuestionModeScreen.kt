@@ -3,11 +3,15 @@ package com.xnotes.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -21,6 +25,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import com.xnotes.platform.QuestionPdfRenderer
+import com.xnotes.platform.QuestionType
 import com.xnotes.ui.theme.LocalPalette
 import com.xnotes.ui.theme.toComposeColor
 import kotlinx.coroutines.CancellationException
@@ -85,16 +90,35 @@ fun QuestionModeScreen(session: QuestionSession, onBack: () -> Unit) {
         }
         Row(Modifier.fillMaxWidth().heightIn(min = 44.dp),
             horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            com.xnotes.platform.QuestionProgressRepository.CHOICES.forEach { choice ->
-                val chosen = session.selectedChoice == choice
-                TextButton(onClick = { session.selectChoice(choice) },
-                    enabled = !session.busy && session.current?.question != null,
-                    modifier = Modifier.width(48.dp).semantics { selected = chosen },
-                    contentPadding = PaddingValues(4.dp)) {
-                    Text(if (chosen) "● $choice" else choice)
+            Box {
+                var settingsOpen by remember(session, session.index) { mutableStateOf(false) }
+                TextButton(onClick = { settingsOpen = true }, enabled = !session.busy && session.current?.question != null) {
+                    Text(if (session.answerOptions.type == QuestionType.OPEN_ENDED) "Open-ended ▾" else "${session.answerOptions.optionCount} options ▾")
+                }
+                DropdownMenu(expanded = settingsOpen, onDismissRequest = { settingsOpen = false }) {
+                    DropdownMenuItem(text = { Text("Open-ended") }, onClick = {
+                        session.setAnswerOptions(session.answerOptions.copy(type = QuestionType.OPEN_ENDED))
+                        settingsOpen = false
+                    }, enabled = !session.busy)
+                    (2..8).forEach { count ->
+                        DropdownMenuItem(text = { Text("Single-choice · $count options") }, onClick = {
+                            session.setAnswerOptions(com.xnotes.platform.QuestionAnswerOptions(optionCount = count))
+                            settingsOpen = false
+                        }, enabled = !session.busy)
+                    }
                 }
             }
-            Spacer(Modifier.weight(1f))
+            Row(Modifier.weight(1f).horizontalScroll(rememberScrollState())) {
+                session.answerOptions.choices.forEach { choice ->
+                    val chosen = session.selectedChoice == choice
+                    TextButton(onClick = { session.selectChoice(choice) },
+                        enabled = !session.busy && session.current?.question != null,
+                        modifier = Modifier.width(48.dp).semantics { selected = chosen },
+                        contentPadding = PaddingValues(4.dp)) {
+                        Text(if (chosen) "● $choice" else choice)
+                    }
+                }
+            }
             TextButton(onClick = session::previous, enabled = session.canPrevious) { Text("◀ Previous") }
             Text("Question ${if (session.count == 0) 0 else session.index + 1} / ${session.count}",
                 Modifier.padding(horizontal = 16.dp), color = palette.text.toComposeColor())

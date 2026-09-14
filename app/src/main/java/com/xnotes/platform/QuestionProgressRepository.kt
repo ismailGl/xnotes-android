@@ -7,7 +7,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
-data class QuestionProgress(val lastQuestionId: String? = null, val choices: Map<String, String> = emptyMap())
+enum class QuestionType { SINGLE_CHOICE, OPEN_ENDED }
+
+data class QuestionAnswerOptions(val type: QuestionType = QuestionType.SINGLE_CHOICE, val optionCount: Int = 5) {
+    init { require(optionCount in 2..8) }
+    val choices: List<String> get() = if (type == QuestionType.OPEN_ENDED) emptyList()
+        else (0 until optionCount).map { ('A' + it).toString() }
+}
+
+data class QuestionProgress(val lastQuestionId: String? = null, val choices: Map<String, String> = emptyMap(),
+    val answerOptions: Map<String, QuestionAnswerOptions> = emptyMap()) {
+    fun optionsFor(id: String) = answerOptions[id] ?: QuestionAnswerOptions()
+}
 
 interface QuestionProgressStore {
     suspend fun load(): QuestionProgress
@@ -32,20 +43,31 @@ class QuestionProgressRepository(root: File, setId: String) : QuestionProgressSt
         } finally { temp.delete() }
     }
     companion object {
-        val CHOICES = listOf("A", "B", "C", "D", "E")
         fun encode(progress: QuestionProgress): String {
-            require(progress.choices.values.all { it in CHOICES })
+            require(progress.choices.all { (id, choice) -> choice in progress.optionsFor(id).choices })
+            val options = JSONObject()
+            progress.answerOptions.forEach { (id, value) ->
+                options.put(id, JSONObject().put("type", value.type.name).put("optionCount", value.optionCount))
+            }
             return JSONObject().put("version", 1).put("lastQuestionId", progress.lastQuestionId ?: JSONObject.NULL)
-                .put("choices", JSONObject(progress.choices)).toString()
+                .put("choices", JSONObject(progress.choices)).put("answerOptions", options).toString()
         }
         fun decode(json: String): QuestionProgress {
             val root = JSONObject(json)
             require(root.getInt("version") == 1)
             val choices = root.optJSONObject("choices") ?: JSONObject()
+            val optionsJson = root.optJSONObject("answerOptions") ?: JSONObject()
+            val options = optionsJson.keys().asSequence().mapNotNull { id ->
+                val value = optionsJson.optJSONObject(id) ?: return@mapNotNull null
+                val type = QuestionType.entries.firstOrNull { it.name == value.optString("type") }
+                    ?: return@mapNotNull null
+                val count = value.optInt("optionCount", 5)
+                if (count !in 2..8) null else id to QuestionAnswerOptions(type, count)
+            }.toMap()
             return QuestionProgress(if (root.isNull("lastQuestionId")) null else root.getString("lastQuestionId"),
                 choices.keys().asSequence().mapNotNull { id ->
-                    choices.optString(id).takeIf { it in CHOICES }?.let { id to it }
-                }.toMap())
+                    choices.optString(id).takeIf { it in (options[id] ?: QuestionAnswerOptions()).choices }?.let { id to it }
+                }.toMap(), options)
         }
     }
 }

@@ -8,6 +8,27 @@ import kotlinx.coroutines.runBlocking
 import java.io.File
 
 class QuestionProgressRepositoryTest {
+    @Test fun legacyStateDefaultsToFiveChoicesAndFlexibleTypesRoundTrip() {
+        val legacy = QuestionProgressRepository.decode("""{"version":1,"lastQuestionId":"q","choices":{"q":"E"}}""")
+        assertEquals(listOf("A", "B", "C", "D", "E"), legacy.optionsFor("q").choices)
+        assertEquals("E", legacy.choices["q"])
+        val state = QuestionProgress("eight", mapOf("eight" to "H"), mapOf(
+            "eight" to QuestionAnswerOptions(optionCount = 8),
+            "written" to QuestionAnswerOptions(QuestionType.OPEN_ENDED)))
+        assertEquals(state, QuestionProgressRepository.decode(QuestionProgressRepository.encode(state)))
+        assertTrue(state.optionsFor("written").choices.isEmpty())
+    }
+    @Test fun invalidOptionsAndOutOfRangeSelectionsAreHandledPerQuestion() {
+        for (count in listOf(1, 9)) {
+            try { QuestionAnswerOptions(optionCount = count); fail() } catch (_: IllegalArgumentException) { }
+        }
+        val decoded = QuestionProgressRepository.decode("""{"version":1,"choices":{"a":"H","b":"C","c":"A"},
+            "answerOptions":{"a":{"type":"SINGLE_CHOICE","optionCount":8},
+            "b":{"type":"SINGLE_CHOICE","optionCount":2},"c":{"type":"OPEN_ENDED"},
+            "bad":{"type":"SINGLE_CHOICE","optionCount":999}}}""")
+        assertEquals(mapOf("a" to "H"), decoded.choices)
+        assertEquals(QuestionAnswerOptions(), decoded.optionsFor("bad"))
+    }
     @get:Rule val temp = TemporaryFolder()
     @Test fun stateSurvivesReopeningAndIsSeparateFromQuestionMetadataAndInk() = runBlocking {
         val root = temp.newFolder()
