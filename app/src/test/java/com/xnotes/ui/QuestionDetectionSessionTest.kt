@@ -68,6 +68,35 @@ class QuestionDetectionSessionTest {
             retry.cancel(); assertEquals(0,dir.listFiles()!!.size)
         } finally { work.cancel() }
     }
+    @Test fun progressReachesSessionAndCancellationPreventsNextPage() = runBlocking {
+        val work=CoroutineScope(coroutineContext+SupervisorJob())
+        val entered=CompletableDeferred<Unit>()
+        val visited=mutableListOf<Int>()
+        var closed=false
+        val reader=object : QuestionPageReader {
+            override suspend fun page(index: Int, progress: suspend (String) -> Unit): PdfTextExtractor.PageData {
+                visited += index
+                progress("Recognizing text on device")
+                entered.complete(Unit)
+                awaitCancellation()
+            }
+            override fun close() { closed=true }
+        }
+        try {
+            val session=QuestionDetectionSession(temp.newFile(),"uri","Title",listOf(0,1),
+                QuestionSetRepository(temp.newFolder()),work,{true},{reader})
+            session.scan(listOf(0,1))
+            withTimeout(5000) { entered.await() }
+            assertTrue(session.status.contains("1 / 2"))
+            assertTrue(session.status.contains("Recognizing text on device"))
+            session.cancel()
+            until { !session.busy }
+            assertTrue(closed)
+            assertEquals(listOf(0),visited)
+            assertTrue(session.proposals.isEmpty())
+            assertEquals("Scan cancelled",session.status)
+        } finally { work.cancel() }
+    }
     @Test fun staleNotebookCannotCommitAndInvalidRangeDoesNotOpenReader() = runBlocking {
         val dir=temp.newFolder(); val work=CoroutineScope(coroutineContext+SupervisorJob()); val reader=Reader()
         try {

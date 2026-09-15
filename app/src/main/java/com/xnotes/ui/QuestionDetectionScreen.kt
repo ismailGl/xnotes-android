@@ -3,6 +3,8 @@ package com.xnotes.ui
 import android.graphics.Bitmap
 import android.graphics.Paint
 import android.graphics.RectF
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.horizontalScroll
@@ -49,6 +51,7 @@ fun QuestionDetectionScreen(editor: Editor) {
     var to by remember { mutableStateOf(from) }
     var pageSlot by remember { mutableIntStateOf(0) }
     var selected by remember { mutableStateOf<String?>(null) }
+    var debugLayout by remember { mutableStateOf(false) }
     var edit by remember { mutableStateOf(false) }
     var add by remember { mutableStateOf(false) }
     val dismiss = { if (!session.saving) { session.cancel(); editor.closeQuestionDetection() } }
@@ -82,7 +85,7 @@ fun QuestionDetectionScreen(editor: Editor) {
                 Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { pageSlot--; selected = null }, enabled = pageSlot > 0 && !session.saving) { Text("◀ Page") }
                     Text(if (page == null) "No preview" else "PDF page ${page + 1}" +
-                        (session.pageSources[page]?.let { " � ${it.label}" } ?: ""))
+                        (session.pageSources[page]?.let { " · ${it.label}" } ?: ""))
                     TextButton(onClick = { pageSlot++; selected = null }, enabled = pageSlot + 1 < session.pages.size && !session.saving) { Text("Page ▶") }
                     TextButton(onClick = { edit = !edit; add = false }, enabled = !session.busy && !session.saving) { Text(if (edit) "Edit rectangles ✓" else "Pan / zoom ✓ · Edit") }
                     TextButton(onClick = { edit = true; add = true; selected = null }, enabled = page != null && !session.busy && !session.saving) { Text(if (add) "Draw a rectangle…" else "Add rectangle") }
@@ -91,6 +94,17 @@ fun QuestionDetectionScreen(editor: Editor) {
                     TextButton(onClick = session::acceptAll, enabled = !session.busy && !session.saving) { Text("Accept All") }
                     Button(onClick = { session.commit { message -> editor.message = message; editor.questionRevision++; editor.closeQuestionDetection() } },
                         enabled = session.proposals.any { it.accepted } && !session.busy && !session.saving) { Text("Add accepted (${session.proposals.count { it.accepted }})") }
+                }
+                TextButton(onClick = { debugLayout = !debugLayout }) { Text(if (debugLayout) "Hide layout diagnostics" else "Layout diagnostics") }
+                if (debugLayout) session.pageDiagnostics[page]?.let { d ->
+                    SelectionContainer {
+                        Text(buildString {
+                            appendLine("Page ${d.page+1}: ${d.columnCount} columns; gutter=${d.gutter}")
+                            d.columnBounds.forEachIndexed { index, bounds -> appendLine("Column ${index+1} allowed x: ${bounds.left}..${bounds.right}") }
+                            d.anchors.forEach { appendLine("Anchor '${it.text}' ${it.box} -> column ${it.column?.plus(1)} ${it.excluded ?: ""}") }
+                            d.proposals.forEach { appendLine("Proposal ${it.id}: ${it.crop}") }
+                        }, Modifier.heightIn(max=140.dp).verticalScroll(rememberScrollState()))
+                    }
                 }
                 Text(proposal?.let { (if (it.accepted) "Accepted · " else "Not accepted · ") + (if (it.likely) "Likely" else "Review needed") +
                     if (session.duplicate(it.sourcePageIndex, it.crop)) " · Existing duplicate: will be skipped"

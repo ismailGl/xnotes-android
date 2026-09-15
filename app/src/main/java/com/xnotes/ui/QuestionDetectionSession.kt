@@ -17,6 +17,7 @@ class QuestionDetectionSession(
 ) {
     var proposals by mutableStateOf<List<DetectedQuestion>>(emptyList()); private set
     var pages by mutableStateOf<List<Int>>(emptyList()); private set
+    var pageDiagnostics by mutableStateOf<Map<Int, QuestionLayoutDetector.Diagnostics>>(emptyMap()); private set
     var pageSources by mutableStateOf<Map<Int, QuestionTextSource>>(emptyMap()); private set
     var busy by mutableStateOf(false); private set
     var saving by mutableStateOf(false); private set
@@ -29,6 +30,7 @@ class QuestionDetectionSession(
         if (busy || saving) return
         val targets = requested.distinct().sorted()
         if (targets.isEmpty() || targets.any { it !in availablePages }) { status = "Choose PDF-backed pages from this notebook"; return }
+        pageDiagnostics = emptyMap()
         pageSources = emptyMap()
         busy = true; proposals = emptyList(); pages = targets; errors = emptyList(); sourceId = null
         job = scope.launch {
@@ -43,13 +45,15 @@ class QuestionDetectionSession(
                     for ((i, page) in targets.withIndex()) {
                         ensureActive(); status = "Scanning ${i + 1} / ${targets.size} · PDF page ${page + 1}"
                         try {
-                            val (data, detected) = withContext(Dispatchers.IO) {
+                            val (data, analysis) = withContext(Dispatchers.IO) {
                                 val data = reader.page(page) { phase ->
                                     withContext(scanContext) { status = "${i + 1} / ${targets.size} · PDF page ${page + 1} · $phase" }
                                 }
                                 ensureActive()
-                                data to QuestionLayoutDetector.detect(page, data.runs, data.layout)
+                                data to QuestionLayoutDetector.analyze(page, data.runs, data.layout)
                             }
+                            val detected = analysis.proposals
+                            pageDiagnostics = pageDiagnostics + (page to analysis)
                             pageSources = pageSources + (page to data.textSource)
                             if (detected.isEmpty()) errors = errors + "Page ${page + 1}: no numbered questions found. Add rectangles manually or try a clearer scan."
                             proposals = proposals + detected.map { it.copy(id = UUID.randomUUID().toString(),
