@@ -42,3 +42,32 @@ The optional device regression accepts `boundaryPdf` (relative to the app files 
 These values are a recorded device-test result, not hardcoded detector rules. Review diagnostics now show allowed column bounds alongside the search gutter and final proposal rectangles.
 
 Device-test execution note: this environment's Gradle/UTP connected-test configuration sets `uninstall_after_test: true` for the debug app. Do not use `connectedDebugAndroidTest` on a device containing app-private work. Use a disposable test device, or install the test APK and invoke `am instrument` directly when replaying a live cached PDF. During the page-13 validation the first replay produced the ranges above; a later replay failed because UTP had removed the debug package/cache. The debug APK was reinstalled afterward. Unit tests and APK assembly do not perform this cleanup.
+
+## Milestone 4B.2: anchor validation and recovery
+
+Real exported OCR/raster inputs for pages 12, 14, 16, 20, 22, 24, 25, 28 and 30 were replayed locally. The recurring top-right failure was missing punctuation, not missing OCR text: the printed question markers became bare `3`/`4`. Page 12's missing middle `2` had the same form. Page 14 contained the damaged marker `)5.` and an interior equation `1.2B-A`; page 30 contained a Roman statement misread as `1.` at an indented body position. Compact answer strips on pages 24/25 were narrower than the old 0.30-page-width footer condition.
+
+`QuestionAnchorDetector` now validates candidates within the established column bounds. It learns the question-number lane from markers supported by nearby stems and separates it from the body-text lane. A regex match alone is insufficient: following content, margin proximity, block position and duplicate-row checks contribute to acceptance/rejection. Bare/damaged markers require supporting layout and are reported as recovered. No answer choices are required.
+
+Recovery also examines separated content starts above the first recognized anchor and inside unusually large anchor gaps. Small raster components in the expected number lane support recovery even when the number has no OCR token. Populated first regions and substantial separated multi-line clusters provide additional evidence; a blank column does not produce an anchor. Equation-first questions can use subsequent explanatory text as support. Recovered proposals always carry a review warning. Confidence values are heuristic ranks, not calibrated probabilities.
+
+Footer rejection now combines low y-position with repeated compact number/punctuation/letter structure, without requiring a full-width strip. It does not decode or persist answer associations. Legitimate lower-page questions remain eligible above a detected strip.
+
+Diagnostics expose OCR/PDF text, visual recovered, and rejected sources, x/y, assigned column, heuristic confidence and reason. Existing gutter inference, hard column crop clamp, source selection, manual review and Question Mode persistence remain in place.
+
+Replay results (page: proposal count): `12:7, 14:5, 16:6, 20:4, 22:4, 24:4, 25:3, 28:6, 30:4`. Tests verify the requested starts, rejection of interior/footer anchors and column containment. A second pass removes the OCR number tokens from those inputs while retaining the real raster; recovery must still find the requested starts.
+
+The opt-in `exportAnchorReplayInputs` instrumentation diagnostic is retained because it provides reproducible inputs for scanner-specific failures. Invoke it directly with `am instrument` and `anchorPdf`, optionally `anchorPages`; do not invoke destructive Gradle device cleanup. Exports remain in device cache and ignored `app/build/anchor-replay/`. `QuestionAnchorReplayTest` runs when these files are available and is skipped otherwise; no private source pages are committed. Independent anonymized geometry regressions cover these failure structures in ordinary CI.
+
+
+## Milestone 4B.3: page regions and roles
+
+`QuestionPageRegions` runs before anchor selection. It identifies tall outer instructional panels from separated text geometry, instructional headings and separate numbered main content; either side is supported. It excludes contents pages with repeated leaders and page references. Uncertain content remains eligible for the existing question validator rather than being silently discarded. No publisher names, colours, logos or page identity enter classification.
+
+Question-bearing areas are mapped into a local horizontal frame so the existing gutter/column detector can split the main area independently of a sidebar. The 4B.2 anchor selector is unchanged. Results return to page coordinates and are finally intersected with their assigned column bounds. Only a bounded binary raster grid is copied, sequentially; no full-resolution page bitmap is added or retained. Source selection and Question Mode persistence are unchanged.
+
+Answer keys have a separate ANSWER_KEY role. Compact sequential number/choice entries, including fragmented tokens and multi-row grids, are excluded irrespective of page position. Prose and numbered diagram exits are not sufficient key evidence; nearby explanatory prose vetoes ambiguous label groups. Exclusion is local: preceding crops stop before a key they intersect, while questions below or beside it remain eligible. The former broad numbered-footer-row cutoff is removed. No answer associations are exposed as answers or saved to Question Mode.
+
+Review diagnostics include region roles, boxes, confidence and reasons. Regression fixtures cover both sidebar orientations, two main question columns, one wide main column, notes inside genuine questions, contents pages, bottom/middle/dedicated-grid keys, nearby numbered diagrams/tables and legitimate short bottom questions. The original private first-book OCR/raster replay remains an additional regression check. These new fixtures model the second-book structure; they are not a fresh on-device OCR replay of that book.
+
+Limitations: role scores are heuristic, and instructional panels whose headings are unreadable may remain unclassified. Mixed layouts without a tall outer sidebar, severe OCR corruption and ambiguous compact number/letter diagrams may still need manual review. Image-first anchor recall remains governed by the preserved 4B.2 selector. A region diagnostic is an exclusion overlay on the tentative question-bearing area, not a claim that every unclassified area contains questions.

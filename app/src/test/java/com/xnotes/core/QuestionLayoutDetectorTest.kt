@@ -48,7 +48,7 @@ class QuestionLayoutDetectorTest {
     @Test fun ocrWordBoxesWithSkewAndSpacedPunctuationFormAnchors() {
         val runs = listOf(line("12",0.08,0.102,0.10), line(".",0.104,0.1,0.11),
             line("Cozunuz",0.118,0.101,0.3), line("A)",0.08,0.2,0.11),
-            line("Soru",0.08,0.5,0.12), line("3",0.127,0.501,0.14))
+            line("Soru",0.08,0.5,0.12), line("3",0.127,0.501,0.14), line("Explain",0.147,0.501,0.28))
         assertEquals(2,QuestionLayoutDetector.detect(0,runs,layout()).size)
     }
     @Test fun rasterMovesBoundaryAwayFromInkWithoutDiscardingDiagram() {
@@ -97,7 +97,7 @@ class QuestionLayoutDetectorTest {
         assertEquals(2,d.columnCount)
         assertTrue(d.gutter!!.center in 0.48..0.53)
         assertEquals(4,d.proposals.size)
-        assertTrue(d.anchors.any { it.excluded?.contains("Interior numbering") == true })
+        assertTrue(d.anchors.any { it.excluded?.contains("interior number") == true })
         assertTrue(d.anchors.filter { it.excluded == null }.all { it.column != null })
     }
     @Test fun missingAnchorDoesNotLeaveCropExtendedThroughBlankPage() {

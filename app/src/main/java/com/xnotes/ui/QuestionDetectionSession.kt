@@ -50,7 +50,7 @@ class QuestionDetectionSession(
                                     withContext(scanContext) { status = "${i + 1} / ${targets.size} · PDF page ${page + 1} · $phase" }
                                 }
                                 ensureActive()
-                                data to QuestionLayoutDetector.analyze(page, data.runs, data.layout)
+                                data to QuestionLayoutDetector.analyze(page, data.runs, data.layout, data.textSource)
                             }
                             val detected = analysis.proposals
                             pageDiagnostics = pageDiagnostics + (page to analysis)

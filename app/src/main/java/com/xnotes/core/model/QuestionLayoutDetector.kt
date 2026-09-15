@@ -22,16 +22,74 @@ object QuestionLayoutDetector {
             return if (l < r) NormalizedRect(l,crop.top,r,crop.bottom) else null
         }
     }
-    data class AnchorDebug(val text: String, val box: NormalizedRect, val column: Int?, val excluded: String? = null)
+    data class AnchorDebug(val text: String, val box: NormalizedRect, val column: Int?, val excluded: String? = null,
+        val source: String = "OCR", val confidence: Double = 0.0, val reason: String = excluded ?: "")
     data class Diagnostics(val page: Int, val columnCount: Int, val gutter: Gutter?,
         val anchors: List<AnchorDebug>, val proposals: List<DetectedQuestion>,
-        val columnBounds: List<ColumnBounds>)
+        val columnBounds: List<ColumnBounds>,
+        val regions: List<QuestionPageRegions.Region> = emptyList())
 
     fun detect(page: Int, runs: List<TextRun>, layout: Layout): List<DetectedQuestion> =
         analyze(page, runs, layout).proposals
 
     /** No bitmaps retained. Also callable by regression tests and the review diagnostics UI. */
-    fun analyze(page: Int, runs: List<TextRun>, layout: Layout): Diagnostics {
+    fun analyze(page: Int, runs: List<TextRun>, layout: Layout, textSource: QuestionTextSource = QuestionTextSource.OCR): Diagnostics {
+        val regions = QuestionPageRegions.classify(runs)
+        val excluded = regions.filter { it.role != QuestionPageRegions.Role.QUESTIONS }
+        if(excluded.isEmpty()) return analyzeColumns(page,runs,layout,textSource).copy(regions=regions)
+        val proposals = mutableListOf<DetectedQuestion>()
+        val debug = mutableListOf<AnchorDebug>()
+        val columns = mutableListOf<ColumnBounds>()
+        var pageGutter: Gutter? = null
+        fun overlaps(a: NormalizedRect, b: NormalizedRect) =
+            a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
+        for (run in runs) {
+            val region = excluded.firstOrNull { overlaps(it.box, run.box) } ?: continue
+            debug += AnchorDebug(run.text, run.box, null, region.role.name.lowercase(), "rejected", 0.0, region.reason)
+        }
+        for (region in regions.filter { it.role == QuestionPageRegions.Role.QUESTIONS }) {
+            val box = region.box
+            val width = box.right-box.left
+            val selected = runs.filter { it.box.left >= box.left && it.box.right <= box.right &&
+                excluded.none { e -> overlaps(e.box,it.box) } }
+            if (selected.isEmpty()) continue
+            fun local(r: NormalizedRect) = NormalizedRect((r.left-box.left)/width,r.top,(r.right-box.left)/width,r.bottom)
+            fun global(r: NormalizedRect) = NormalizedRect(
+                (box.left+r.left*width).coerceIn(box.left,box.right),r.top,
+                (box.left+r.right*width).coerceIn(box.left,box.right),r.bottom)
+            // Only a bounded binary layout grid is copied, never another rendered page bitmap.
+            val x0=(box.left*layout.width).toInt()
+            val w=((box.right*layout.width).toInt()-x0).coerceAtLeast(1)
+            val ink=BooleanArray(w*layout.height) { i ->
+                val x=x0+i%w; val y=i/w
+                layout.occupied(x.coerceAtMost(layout.width-1),y) && excluded.none { e ->
+                    x.toDouble()/layout.width >= e.box.left && x.toDouble()/layout.width < e.box.right &&
+                    y.toDouble()/layout.height >= e.box.top && y.toDouble()/layout.height < e.box.bottom
+                }
+            }
+            val result=analyzeColumns(page,selected.map { TextRun(it.text,local(it.box)) },Layout(w,layout.height,ink),textSource)
+            val offset=columns.size
+            columns += result.columnBounds.map { ColumnBounds(box.left+it.left*width,box.left+it.right*width) }
+            result.gutter?.let { pageGutter=Gutter(box.left+it.left*width,box.left+it.right*width) }
+            debug += result.anchors.map { it.copy(box=global(it.box),column=it.column?.plus(offset)) }
+            for (proposal in result.proposals) {
+                var crop=global(proposal.crop)
+                // A compact answer section is an obstacle, not a page-wide footer cutoff.
+                // End a preceding crop before it; questions below it remain eligible.
+                val stop=excluded.filter { it.role==QuestionPageRegions.Role.ANSWER_KEY && overlaps(crop,it.box) &&
+                    it.box.top > crop.top }.minOfOrNull { it.box.top }
+                if(stop!=null) crop=NormalizedRect(crop.left,crop.top,crop.right,minOf(crop.bottom,stop))
+                if(excluded.any { overlaps(crop,it.box) }) continue
+                val column=offset+proposal.id.split("-")[1].toInt()
+                val finalCrop=columns[column].clamp(crop) ?: continue
+                proposals += proposal.copy(id="$page-$column-${proposal.id.substringAfterLast("-")}",crop=finalCrop,
+                    reasons=proposal.reasons+if(stop!=null) listOf("Crop ends before an excluded answer-key region; review boundary") else emptyList())
+            }
+        }
+        return Diagnostics(page,columns.size,pageGutter,debug,proposals,columns,regions)
+    }
+
+    private fun analyzeColumns(page: Int, runs: List<TextRun>, layout: Layout, textSource: QuestionTextSource): Diagnostics {
         // Join adjacent glyphs on a baseline, but never bridge a column-sized gap.
         val lines = mutableListOf<TextRun>()
         for (run in runs.sortedWith(compareBy<TextRun> { it.box.left }.thenBy { it.box.top })) {
@@ -43,15 +101,9 @@ object QuestionLayoutDetector {
                     NormalizedRect(old.box.left, minOf(old.box.top, run.box.top), run.box.right, maxOf(old.box.bottom, run.box.bottom)))
             }
         }
-        // Dense numbered rows near the foot are publication furniture, not questions.
-        // Detect their geometry only; never decode or store answer-key associations.
-        val numbered = Regex("[0-9]{1,3}\\s*[.)]")
-        val footerTop = runs.filter { it.box.top > 0.86 }.mapNotNull { run ->
-            val row = runs.filter { abs(it.box.top - run.box.top) < 0.012 }
-            if (row.sumOf { numbered.findAll(it.text).count() } >= 3 &&
-                row.maxOf { it.box.right } - row.minOf { it.box.left } > 0.3)
-                row.minOf { it.box.top } - 0.008 else null
-        }.minOrNull() ?: 0.96
+        // Answer-key regions have already been removed by role classification.
+        // Bare numbered diagram rows must never set a global footer cutoff.
+        val footerTop = 0.96
         val body = lines.filter { it.box.top >= 0.025 && it.box.bottom < footerTop }
         val rawAnchors = lines.filter { anchor.containsMatchIn(it.text.trimStart()) }
         val anchors = rawAnchors.filter { it in body && it.box.top < 0.95 }
@@ -123,17 +175,22 @@ object QuestionLayoutDetector {
             listOf(ColumnBounds(0.0,(l-0.002).coerceAtLeast(0.01)),
                 ColumnBounds((r+0.002).coerceAtMost(0.99),1.0))
         }
-        val acceptedAnchors = mutableListOf<TextRun>()
+        val numericShape=Regex("^[)\\]|(]*\\s*[0-9]{1,3}\\s*[.)]?$")
+        val anchorDiagnostics=lines.filter { it !in body &&
+            (anchor.containsMatchIn(it.text.trim()) || numericShape.matches(it.text.trim())) }.map { run ->
+            AnchorDebug(run.text,run.box,if(gutter!=null && run.box.left>=gutter) 1 else 0,
+                "footer", "rejected",0.0,"footer/header region")
+        }.toMutableList()
         val output = mutableListOf<DetectedQuestion>()
         for (column in 0 until edges.lastIndex) {
             val bounds = cropBounds[column]
             val left = bounds.left; val right = bounds.right
-            val candidates = anchors.filter { it.box.left >= edges[column] && it.box.left < edges[column+1] }
-            val margin = modes(candidates).filter { it.size >= 2 }.maxByOrNull { it.size }
-                ?.map { it.box.left }?.average()
-            val group = candidates.filter { margin == null || abs(it.box.left-margin) <= 0.055 }
-                .sortedBy { it.box.top }
-            acceptedAnchors += group
+            val selection=QuestionAnchorDetector.select(body.filter {
+                it.box.left >= edges[column] && it.box.left < edges[column+1] && it.box.right <= bounds.right+0.025
+            },bounds,column,layout,textSource.label,
+                anchors.filter { it.box.left < edges[column] || it.box.left >= edges[column+1] }.map { it.box.top })
+            val group=selection.accepted
+            anchorDiagnostics += selection.diagnostics
             group.forEachIndexed { i, start ->
                 val next = group.getOrNull(i + 1)
                 val top = (start.box.top - 0.006).coerceAtLeast(0.0)
@@ -168,6 +225,9 @@ object QuestionLayoutDetector {
                 val y = (limit * layout.height).toInt().coerceIn(0, layout.height - 1)
                 val boundaryInk = ((left * layout.width).toInt() until (right * layout.width).toInt()).count { x -> layout.occupied(x, y) }
                 val reasons = mutableListOf<String>()
+                selection.diagnostics.firstOrNull { it.box==start.box && it.source=="visual recovered" }?.let {
+                    reasons += "Recovered question start: ${it.reason}; review before accepting"
+                }
                 val choices = lines.filter { it.box.left >= left && it.box.left < right &&
                     it.box.top >= top && it.box.top < limit && option.containsMatchIn(it.text) }
                 if (choices.any { it.box.bottom > limit }) reasons += "Answer option touches the lower boundary"
@@ -189,14 +249,6 @@ object QuestionLayoutDetector {
                 if (finalCrop != null) output += DetectedQuestion("$page-$column-$i", page, finalCrop, reasons)
             }
         }
-        return Diagnostics(page, edges.size-1, gutterRange, rawAnchors.map { run ->
-            AnchorDebug(run.text, run.box, if (run in acceptedAnchors) {
-                if (gutter != null && run.box.left >= gutter) 1 else 0
-            } else null, when {
-                run !in anchors -> "Header/footer region"
-                run !in acceptedAnchors -> "Interior numbering away from question margin"
-                else -> null
-            })
-        }, output, cropBounds)
+        return Diagnostics(page, edges.size-1, gutterRange, anchorDiagnostics, output, cropBounds)
     }
 }

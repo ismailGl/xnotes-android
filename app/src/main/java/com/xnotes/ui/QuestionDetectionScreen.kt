@@ -100,8 +100,9 @@ fun QuestionDetectionScreen(editor: Editor) {
                     SelectionContainer {
                         Text(buildString {
                             appendLine("Page ${d.page+1}: ${d.columnCount} columns; gutter=${d.gutter}")
+                            d.regions.forEach { appendLine("Region ${it.role}: ${it.box}; confidence=${it.confidence}: ${it.reason}") }
                             d.columnBounds.forEachIndexed { index, bounds -> appendLine("Column ${index+1} allowed x: ${bounds.left}..${bounds.right}") }
-                            d.anchors.forEach { appendLine("Anchor '${it.text}' ${it.box} -> column ${it.column?.plus(1)} ${it.excluded ?: ""}") }
+                            d.anchors.forEach { appendLine("${it.source} '${it.text}' x=${it.box.left} y=${it.box.top} -> column ${it.column?.plus(1)} confidence=${it.confidence}: ${it.reason}") }
                             d.proposals.forEach { appendLine("Proposal ${it.id}: ${it.crop}") }
                         }, Modifier.heightIn(max=140.dp).verticalScroll(rememberScrollState()))
                     }
