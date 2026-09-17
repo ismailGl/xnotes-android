@@ -34,13 +34,15 @@ object QuestionLayoutDetector {
 
     /** No bitmaps retained. Also callable by regression tests and the review diagnostics UI. */
     fun analyze(page: Int, runs: List<TextRun>, layout: Layout, textSource: QuestionTextSource = QuestionTextSource.OCR): Diagnostics {
-        val regions = QuestionPageRegions.classify(runs)
+        val regions = QuestionReadingBands.refine(QuestionPageRegions.classify(runs),runs,layout)
         val excluded = regions.filter { it.role != QuestionPageRegions.Role.QUESTIONS }
         if(excluded.isEmpty()) return analyzeColumns(page,runs,layout,textSource).copy(regions=regions)
         val proposals = mutableListOf<DetectedQuestion>()
         val debug = mutableListOf<AnchorDebug>()
         val columns = mutableListOf<ColumnBounds>()
-        var pageGutter: Gutter? = null
+        val questionRegions=regions.filter { it.role==QuestionPageRegions.Role.QUESTIONS }.sortedBy { it.box.left }
+        var pageGutter: Gutter? = if(questionRegions.size==2)
+            Gutter(questionRegions[0].box.right,questionRegions[1].box.left) else null
         fun overlaps(a: NormalizedRect, b: NormalizedRect) =
             a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
         for (run in runs) {
@@ -50,7 +52,7 @@ object QuestionLayoutDetector {
         for (region in regions.filter { it.role == QuestionPageRegions.Role.QUESTIONS }) {
             val box = region.box
             val width = box.right-box.left
-            val selected = runs.filter { it.box.left >= box.left && it.box.right <= box.right &&
+            val selected = runs.filter { it.box.left >= box.left && it.box.right <= box.right && it.box.top>=box.top && it.box.bottom<=box.bottom &&
                 excluded.none { e -> overlaps(e.box,it.box) } }
             if (selected.isEmpty()) continue
             fun local(r: NormalizedRect) = NormalizedRect((r.left-box.left)/width,r.top,(r.right-box.left)/width,r.bottom)
@@ -62,18 +64,21 @@ object QuestionLayoutDetector {
             val w=((box.right*layout.width).toInt()-x0).coerceAtLeast(1)
             val ink=BooleanArray(w*layout.height) { i ->
                 val x=x0+i%w; val y=i/w
+                y.toDouble()/layout.height>=box.top && y.toDouble()/layout.height<box.bottom &&
                 layout.occupied(x.coerceAtMost(layout.width-1),y) && excluded.none { e ->
                     x.toDouble()/layout.width >= e.box.left && x.toDouble()/layout.width < e.box.right &&
                     y.toDouble()/layout.height >= e.box.top && y.toDouble()/layout.height < e.box.bottom
                 }
             }
-            val result=analyzeColumns(page,selected.map { TextRun(it.text,local(it.box)) },Layout(w,layout.height,ink),textSource)
+            val result=analyzeColumns(page,selected.map { TextRun(it.text,local(it.box)) },Layout(w,layout.height,ink),textSource,region.inferColumns,width,region.recoveredStart?.let { local(it) })
             val offset=columns.size
             columns += result.columnBounds.map { ColumnBounds(box.left+it.left*width,box.left+it.right*width) }
             result.gutter?.let { pageGutter=Gutter(box.left+it.left*width,box.left+it.right*width) }
             debug += result.anchors.map { it.copy(box=global(it.box),column=it.column?.plus(offset)) }
             for (proposal in result.proposals) {
-                var crop=global(proposal.crop)
+                val mapped=global(proposal.crop)
+                if(mapped.top>=box.bottom || mapped.bottom<=box.top) continue
+                var crop=NormalizedRect(mapped.left,maxOf(mapped.top,box.top),mapped.right,minOf(mapped.bottom,box.bottom))
                 // A compact answer section is an obstacle, not a page-wide footer cutoff.
                 // End a preceding crop before it; questions below it remain eligible.
                 val stop=excluded.filter { it.role==QuestionPageRegions.Role.ANSWER_KEY && overlaps(crop,it.box) &&
@@ -89,15 +94,15 @@ object QuestionLayoutDetector {
         return Diagnostics(page,columns.size,pageGutter,debug,proposals,columns,regions)
     }
 
-    private fun analyzeColumns(page: Int, runs: List<TextRun>, layout: Layout, textSource: QuestionTextSource): Diagnostics {
+    private fun analyzeColumns(page: Int, runs: List<TextRun>, layout: Layout, textSource: QuestionTextSource, inferColumns: Boolean = true, horizontalScale: Double = 1.0, recoveredStart: NormalizedRect? = null): Diagnostics {
         // Join adjacent glyphs on a baseline, but never bridge a column-sized gap.
         val lines = mutableListOf<TextRun>()
         for (run in runs.sortedWith(compareBy<TextRun> { it.box.left }.thenBy { it.box.top })) {
             val i = lines.indexOfLast { abs(it.box.bottom - run.box.bottom) < maxOf(0.006, (run.box.bottom - run.box.top) * 0.4) &&
-                run.box.left >= it.box.right - 0.003 && run.box.left - it.box.right < 0.012 }
+                run.box.left >= it.box.right - 0.003/horizontalScale && run.box.left - it.box.right < 0.012/horizontalScale }
             if (i < 0) lines += run else {
                 val old = lines[i]
-                lines[i] = TextRun(old.text + (if (run.box.left - old.box.right > 0.002) " " else "") + run.text,
+                lines[i] = TextRun(old.text + (if (run.box.left - old.box.right > 0.002/horizontalScale) " " else "") + run.text,
                     NormalizedRect(old.box.left, minOf(old.box.top, run.box.top), run.box.right, maxOf(old.box.bottom, run.box.bottom)))
             }
         }
@@ -130,7 +135,7 @@ object QuestionLayoutDetector {
                     Triple(lx,rx,l.size*r.size) else null
             } }.maxByOrNull { it.third }?.let { it.first to it.second }
         }
-        val columnGap = modePair(anchors, 2) ?: modePair(body, 2) ?: modePair(anchors, 1)
+        val columnGap = if(inferColumns) modePair(anchors, 2) ?: modePair(body, 2) ?: modePair(anchors, 1) else null
         val gutterRange = columnGap?.let { (left, right) ->
             // Robust text edges define the search interval; one crossing publisher mark
             // cannot erase it. Narrow vertical divider ink is not a whitespace veto.
@@ -188,8 +193,11 @@ object QuestionLayoutDetector {
             val selection=QuestionAnchorDetector.select(body.filter {
                 it.box.left >= edges[column] && it.box.left < edges[column+1] && it.box.right <= bounds.right+0.025
             },bounds,column,layout,textSource.label,
-                anchors.filter { it.box.left < edges[column] || it.box.left >= edges[column+1] }.map { it.box.top })
-            val group=selection.accepted
+                anchors.filter { it.box.left < edges[column] || it.box.left >= edges[column+1] }.map { it.box.top },horizontalScale)
+            val recovered=recoveredStart?.let { TextRun("Unrecognized question number",it) }
+            val group=(selection.accepted.filter { recovered==null || it.box.top>recovered.box.bottom+.025 }+listOfNotNull(recovered)).sortedBy { it.box.top }
+            if(recovered!=null) anchorDiagnostics+=AnchorDebug(recovered.text,recovered.box,column,null,"visual recovered",.78,
+                "number-lane glyph before spanning raster block and later prose")
             anchorDiagnostics += selection.diagnostics
             group.forEachIndexed { i, start ->
                 val next = group.getOrNull(i + 1)

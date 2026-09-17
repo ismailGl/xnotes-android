@@ -15,6 +15,21 @@ val keystoreProperties = Properties().apply {
     if (hasReleaseSigning) keystorePropertiesFile.inputStream().use { load(it) }
 }
 
+// Optional local development verifier. Release builds never receive credentials.
+val verifierLocal = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+}
+fun verifierSetting(name: String, fallback: String = ""): String =
+    providers.gradleProperty(name).orNull ?: providers.environmentVariable(name).orNull
+        ?: verifierLocal.getProperty(name) ?: fallback
+fun javaLiteral(value: String): String = "\"" + value.flatMap { c ->
+    when (c) {
+        '\\' -> "\\\\".toList()
+        '"' -> "\\\"".toList()
+        else -> if (c.code < 32 || c.code > 126) "\\u%04x".format(c.code).toList() else listOf(c)
+    }
+}.joinToString("") + "\""
+
 android {
     namespace = "com.xnotes"
     compileSdk = 36
@@ -23,6 +38,8 @@ android {
 
     defaultConfig {
         applicationId = "com.xnotes"
+        buildConfigField("String", "GEMINI_API_KEY", "\"\"")
+        buildConfigField("String", "GEMINI_MODEL", javaLiteral(verifierSetting("GEMINI_MODEL", "gemini-2.5-flash")))
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         minSdk = 26
         targetSdk = 36
@@ -67,6 +84,7 @@ android {
 
     buildTypes {
         debug {
+            buildConfigField("String", "GEMINI_API_KEY", javaLiteral(verifierSetting("GEMINI_API_KEY").trim()))
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
         }
@@ -91,6 +109,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

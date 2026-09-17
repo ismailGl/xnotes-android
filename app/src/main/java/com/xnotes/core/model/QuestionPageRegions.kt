@@ -7,9 +7,9 @@ import java.util.Locale
 /** Page furniture is classified before question margins are learned. No publisher identity or colour. */
 object QuestionPageRegions {
     enum class Role { QUESTIONS, INSTRUCTIONAL, DOCUMENT, ANSWER_KEY }
-    data class Region(val box: NormalizedRect, val role: Role, val confidence: Double, val reason: String)
+    data class Region(val box: NormalizedRect, val role: Role, val confidence: Double, val reason: String, val inferColumns: Boolean = true, val recoveredStart: NormalizedRect? = null)
     private val whole = NormalizedRect(0.0,0.0,1.0,1.0)
-    private val entry = Regex("(?<![\\p{L}\\d])[0-9]{1,3}\\s*[.):–-]?\\s*[A-E](?![\\p{L}\\d])")
+    private val entry = Regex("(?<![\\p{L}\\d])[0-9]{1,3}\\s*[.):–-]?\\s*[A-E](?![\\p{L}\\d])",RegexOption.IGNORE_CASE)
     private fun folded(s: String) = s.lowercase(Locale.ROOT).replace('ı','i').replace('ö','o')
         .replace('ğ','g').replace('ü','u').replace('ş','s').replace('ç','c').replace("i\u0307","i")
     private val teaching = Regex("^(?:konuyu ogrenelim|ornek|cozum|bilgi|uyari)(?:\\s|:|$)")
@@ -23,7 +23,7 @@ object QuestionPageRegions {
             val joined=mutableListOf<TextRun>()
             for(run in row.sortedBy { it.box.left }) {
                 val previous=joined.lastOrNull()
-                if(previous!=null && run.box.left-previous.box.right in -0.003..0.012) {
+                if(previous!=null && run.box.left-previous.box.right in -0.01..0.012) {
                     joined[joined.lastIndex]=TextRun(previous.text+" "+run.text,union(listOf(previous,run)))
                 } else joined+=run
             }
@@ -34,7 +34,17 @@ object QuestionPageRegions {
             val text=row.sortedBy { it.box.left }.joinToString(" ") { it.text }
             Regex("[.·…]{3,}").containsMatchIn(text) && Regex("[0-9]+\\s*$").containsMatchIn(text)
         }
-        if(contentsRows>=4) return keys+Region(whole,Role.DOCUMENT,0.95,"repeated contents leaders and page references")
+        val references=rows(body).mapNotNull { row ->
+            val ordered=row.sortedBy { it.box.left }
+            val last=ordered.lastOrNull() ?: return@mapNotNull null
+            val number=last.text.trim().trimStart('.').toIntOrNull() ?: return@mapNotNull null
+            val before=ordered.dropLast(1).lastOrNull() ?: return@mapNotNull null
+            if(last.box.left-before.box.right>0.15 && before.text.count(Char::isLetter)>=4) last to number else null
+        }
+        val increasing=references.zipWithNext().count { (a,b) -> b.second>=a.second }
+        val navigation=references.size>=6 && increasing>=references.size*0.8 && contentsRows>=1 &&
+            references.last().first.box.top-references.first().first.box.top>0.3
+        if(contentsRows>=4 || navigation) return keys+Region(whole,Role.DOCUMENT,0.95,"repeated contents leaders and page references")
 
         val result=mutableListOf<Region>()
         // Consider off-centre separators as well as the page centre. A sidebar is a tall
@@ -43,7 +53,7 @@ object QuestionPageRegions {
         val panels=mutableListOf<Panel>()
         for(step in 20..80) {
             val split=step/100.0
-            val active=body.filter { it.box.top in 0.06..0.94 }
+            val active=body.filter { it.box.top in 0.025..0.94 }
             val crossing=active.count { it.box.left<split-0.004 && it.box.right>split+0.004 }
             if(crossing>maxOf(1,active.size/30)) continue
             for(leftSide in listOf(true,false)) {
@@ -57,7 +67,7 @@ object QuestionPageRegions {
                 val substantive=inside.count { it.text.count(Char::isLetter)>12 }>=3
                 val questionOutside=outside.any { Regex("^(?:[0-9]{1,3}\\s*[.)]|Soru\\s+[0-9])",RegexOption.IGNORE_CASE).containsMatchIn(it.text.trim()) }
                 if(tall && substantive && questionOutside && (title || headings.size>=2))
-                    panels += Panel(panel,headings.size*100+inside.size-crossing*20)
+                    panels += Panel(panel,headings.size*100+inside.count { it.text.count(Char::isLetter)>12 }-crossing*20)
             }
         }
         val sidebar=panels.maxWithOrNull(compareBy<Panel> { it.score }.thenBy { -(it.box.right-it.box.left) })
@@ -65,9 +75,50 @@ object QuestionPageRegions {
             result += Region(sidebar.box,Role.INSTRUCTIONAL,0.85,"tall outer panel, instructional headings and separate numbered content")
             val main=if(sidebar.box.left==0.0) NormalizedRect(sidebar.box.right,0.0,1.0,1.0)
                 else NormalizedRect(0.0,0.0,sidebar.box.left,1.0)
-            result += Region(main,Role.QUESTIONS,0.80,"main content outside instructional panel; infer question columns locally")
+            result += questionAreas(main,clean)
         } else result += Region(whole,Role.QUESTIONS,0.50,"unclassified content retained for existing question validation")
         return result+keys
+    }
+
+    /** A sidebar changes the page hierarchy. Within its main area, repeated marker lanes
+     * define question columns; ordinary text/table-cell lanes are not independent columns. */
+    private fun questionAreas(main: NormalizedRect, runs: List<TextRun>): List<Region> {
+        val marker=Regex("^(?:[0-9]{1,3}\\s*[.)](?:\\s|$)|[0-9]{1,3}$|Soru\\s+[0-9])",RegexOption.IGNORE_CASE)
+        val groups=mutableListOf<MutableList<TextRun>>()
+        for(run in runs.filter { contains(main,it.box) && it.box.top in 0.04..0.9 && marker.containsMatchIn(it.text.trim()) &&
+                (Regex("^[0-9]{1,3}\\s*[.)]").containsMatchIn(it.text.trim()) || runs.none { previous -> previous !== it && abs(previous.box.top-it.box.top)<0.008 &&
+                    previous.box.right<=it.box.left && it.box.left-previous.box.right<0.014 &&
+                    previous.text.any(Char::isLetterOrDigit) }) }
+            .sortedBy { it.box.left }) {
+            val group=groups.lastOrNull()
+            if(group==null || run.box.left-group.first().box.left>0.025) groups+=mutableListOf(run) else group+=run
+        }
+        val lanes=groups.filter { g ->
+            val x=g.first().box.left
+            val stems=runs.filter { it.box.left in (x+0.015)..(x+0.04) && it.text.count(Char::isLetter)>=4 }
+            (g.map { (it.box.top/0.05).toInt() }.distinct().size>=2 ||
+                stems.map { (it.box.top/0.03).toInt() }.distinct().size>=4) && g.minOf { it.box.top }<0.65
+        }
+        val width=main.right-main.left
+        val left=lanes.firstOrNull { it.first().box.left<main.left+width*0.25 }
+        fun score(lane: List<TextRun>): Double {
+            val x=lane.first().box.left
+            val stemRows=runs.filter { it.box.left in (x+0.015)..(x+0.04) && it.text.count(Char::isLetter)>=4 }
+                .map { (it.box.top/0.03).toInt() }.distinct().size
+            return QuestionNumberSequence.laneScore(lane)+minOf(2.0,stemRows/4.0)
+        }
+        val right=if(left==null) null else lanes.filter { it.first().box.left-left.first().box.left>width*0.25 }
+            .filter { score(it)>0.0 }
+            .maxByOrNull { score(it) }
+        if(right==null) return listOf(Region(main,Role.QUESTIONS,0.75,
+            "main question area: no second repeated question-marker lane",false))
+        val margin=right.map { it.box.left }.sorted()[right.size/2]
+        // Keep every right-column marker inside its column. The split is in the small
+        // gap before that lane, not the often much wider gap before the prose lane.
+        val split=margin-0.012
+        return listOf(
+            Region(NormalizedRect(main.left,0.0,split-0.002,1.0),Role.QUESTIONS,0.85,"left question-marker lane inside main area",false),
+            Region(NormalizedRect(split+0.002,0.0,main.right,1.0),Role.QUESTIONS,0.85,"right question-marker lane inside main area",false))
     }
 
     private fun contains(a: NormalizedRect,b: NormalizedRect) = b.left>=a.left && b.right<=a.right && b.top>=a.top && b.bottom<=a.bottom
@@ -80,7 +131,7 @@ object QuestionPageRegions {
         return result
     }
     private fun answerKeys(runs: List<TextRun>): List<Region> {
-        data class Strip(val runs: List<TextRun>,val numbers: List<Int>)
+        data class Strip(val runs: List<TextRun>,val numbers: List<Int>,val orphanChoices: Int)
         val strips=mutableListOf<Strip>()
         for(row in rows(runs)) {
             // Split at prose, preserving nearby numbered diagrams/tables as separate content.
@@ -89,8 +140,13 @@ object QuestionPageRegions {
             for(run in row.sortedBy { it.box.left }) {
                 val text=run.text.trim()
                 val residue=entry.replace(text,"").replace(Regex("[\\s|,;:.-]"),"")
-                val fragment=Regex("^(?:[0-9]{1,3}[.)]?|[A-E]|[.)])$").matches(text)
-                if(residue.isEmpty() || fragment) {
+                val fragment=Regex("^(?:[0-9]{1,3}[.)]?|[A-E]|[.)])$",RegexOption.IGNORE_CASE).matches(text)
+                val partial=entry.replace(text," ").trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+                val completeCount=entry.findAll(text).count()
+                val compactPartial=completeCount>=2 && partial.size<=completeCount && partial.all {
+                    Regex("(?:[A-E]|[0-9]{1,3}[.)]?)",RegexOption.IGNORE_CASE).matches(it)
+                }
+                if(residue.isEmpty() || fragment || compactPartial) {
                     if(group.isNotEmpty() && run.box.left-group.last().box.right>0.20) { groups+=group;group=mutableListOf() }
                     group+=run
                 } else if(group.isNotEmpty()) { groups+=group;group=mutableListOf() }
@@ -100,9 +156,11 @@ object QuestionPageRegions {
                 val text=items.joinToString(" ") { it.text }
                 val matches=entry.findAll(text).toList()
                 val residue=entry.replace(text,"").replace(Regex("[\\s|,;:.-]"),"")
-                if(matches.isNotEmpty() && residue.isEmpty()) {
+                val leftovers=entry.replace(text," ").trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+                val fragmentsOnly=leftovers.all { Regex("(?:[A-E]|[0-9]{1,3}[.)]?)",RegexOption.IGNORE_CASE).matches(it) }
+                if(matches.isNotEmpty() && (residue.isEmpty() || (fragmentsOnly && leftovers.size<=matches.size))) {
                     val numbers=matches.map { Regex("[0-9]+").find(it.value)!!.value.toInt() }
-                    strips+=Strip(items,numbers)
+                    strips+=Strip(items,numbers,leftovers.count { Regex("[A-E]",RegexOption.IGNORE_CASE).matches(it) })
                 }
             }
         }
@@ -125,7 +183,9 @@ object QuestionPageRegions {
             }
             val numbers=component.flatMap { it.numbers }.sorted()
             val sequential=numbers.zipWithNext().count { (a,b) -> b==a+1 }
-            if(numbers.size<3 || sequential<numbers.size-2) continue
+            val orphanChoices=component.sumOf { it.orphanChoices }
+            val enough=numbers.size>=3 || (numbers.size==2 && orphanChoices>=2)
+            if(!enough || numbers.distinct().size!=numbers.size || sequential<maxOf(1,(numbers.size-1)/2)) continue
             val items=component.flatMap { it.runs }
             val box=union(items)
             // Three isolated short questions spread down a page do not form a compact key.

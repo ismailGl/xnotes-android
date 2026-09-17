@@ -95,4 +95,35 @@ class QuestionPageRegionsTest {
         assertEquals(2,d.proposals.size)
     }
 
+    @Test fun earlyOverlappingHeaderAndIsolatedMarkerDoNotClipMainRegion() {
+        val side=panel(0.04).filterNot { it.text in listOf("Konuyu ogrenelim","Ornek","Cozum") }+
+            listOf(line("KONUYU",0.10,0.055,0.17),line("OGRENELIM",0.165,0.055,0.26))
+        val d=analyze(side+listOf(line("1.",0.33,0.1,0.34),line("Substantial question content",0.36,0.1,0.61),
+            line("2.",0.33,0.5,0.34),line("Another substantial question",0.36,0.5,0.61)))
+        val main=d.regions.single { it.role==QuestionPageRegions.Role.QUESTIONS }
+        assertTrue(main.box.left<0.33)
+        assertEquals(2,d.proposals.size)
+    }
+    @Test fun contentsWithMostlyLostLeadersStillUsesAlignedPageReferences() {
+        val d=analyze((0..7).flatMap { i -> listOf(line(if(i==0) "Topic ........" else "Chapter topic",0.2,0.1+i*0.1,0.5),
+            line("${100+i*10}",0.85,0.1+i*0.1,0.9)) })
+        assertTrue(d.regions.any { it.role==QuestionPageRegions.Role.DOCUMENT })
+        assertTrue(d.proposals.isEmpty())
+    }
+    @Test fun keyWithMissingNumbersAndLowercaseChoicesIsExcluded() {
+        val d=analyze(listOf(line("1. Explain",0.08,0.1,0.9),
+            line("1A 2b 3C 5D 6E C 8B 9c 10D",0.2,0.92,0.8)))
+        assertTrue(d.regions.any { it.role==QuestionPageRegions.Role.ANSWER_KEY })
+        assertEquals(1,d.proposals.size)
+        assertTrue(d.proposals.single().crop.bottom<0.92)
+    }
+    @Test fun wideMainTableTextLanesAreNotAdditionalQuestionColumns() {
+        val d=analyze(panel(0.76)+listOf(line("1. Explain this wide table",0.06,0.12,0.68),
+            line("2. Interpret another table",0.06,0.55,0.68),
+            line("Left table text",0.15,0.2,0.32),line("Left table text",0.15,0.3,0.32),
+            line("Right table text",0.45,0.2,0.65),line("Right table text",0.45,0.3,0.65)))
+        assertEquals(1,d.columnCount)
+        assertEquals(2,d.proposals.size)
+    }
+
 }

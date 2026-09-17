@@ -73,4 +73,32 @@ class QuestionAnchorRecoveryTest {
     @Test fun isolatedMarginNumberWithoutBodyIsRejected() {
         assertTrue(select(listOf(line("1.",0.534,0.125,0.546))).accepted.isEmpty())
     }
+    @Test fun imageFirstMarkerUsesRasterAndDelayedTextInBothCoordinateFrames() {
+        val runs=listOf(line("4.",0.534,0.12,0.546),
+            line("Explain the substantial diagram shown above",0.565,0.43),
+            line("5. Another substantial question",0.534,0.70))
+        val image=layout()
+        for(y in 200..550) for(x in 570..850) image.ink[y*1000+x]=true
+        val full=select(runs,image)
+        assertTrue(full.accepted.any { it.text=="4." })
+        assertTrue(full.diagnostics.any { it.reason.contains("substantial raster block") })
+        assertFalse(select(runs).accepted.any { it.text=="4." })
+        val localRuns=runs.map { it.copy(box=it.box.let { b ->
+            NormalizedRect((b.left-.51)/.49,b.top,(b.right-.51)/.49,b.bottom)
+        }) }
+        val localImage=QuestionLayoutDetector.Layout(490,1400,BooleanArray(490*1400) { i ->
+            image.ink[(i/490)*1000+i%490+510]
+        })
+        val local=QuestionAnchorDetector.select(localRuns,QuestionLayoutDetector.ColumnBounds(0.0,1.0),
+            1,localImage,"OCR",emptyList(),.49)
+        assertEquals(full.accepted.map { it.text },local.accepted.map { it.text })
+    }
+    @Test fun optionPrefixedNumberCannotSplitActiveQuestion() {
+        val d=select(listOf(line("1. Explain this substantial question",0.534,0.12),
+            line("A)",0.520,0.30,0.531),line("2.",0.534,0.30,0.546),
+            line("A long option is still part of the question",0.565,0.30),
+            line("2. Next substantial question",0.534,0.60)))
+        assertEquals(listOf(.12,.60),d.accepted.map { it.box.top })
+        assertTrue(d.diagnostics.any { it.reason.contains("inline text or option prefix") })
+    }
 }

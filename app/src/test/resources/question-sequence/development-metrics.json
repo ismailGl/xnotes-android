@@ -1,0 +1,23 @@
+[
+  {
+    "completeCrops": 2,
+    "recalled": 2,
+    "falseAnchors": 0,
+    "page": 32,
+    "realAnchors": 2
+  },
+  {
+    "completeCrops": 6,
+    "recalled": 6,
+    "falseAnchors": 0,
+    "page": 37,
+    "realAnchors": 6
+  },
+  {
+    "completeCrops": 5,
+    "recalled": 5,
+    "falseAnchors": 0,
+    "page": 47,
+    "realAnchors": 5
+  }
+]

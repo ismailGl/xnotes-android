@@ -71,3 +71,75 @@ Answer keys have a separate ANSWER_KEY role. Compact sequential number/choice en
 Review diagnostics include region roles, boxes, confidence and reasons. Regression fixtures cover both sidebar orientations, two main question columns, one wide main column, notes inside genuine questions, contents pages, bottom/middle/dedicated-grid keys, nearby numbered diagrams/tables and legitimate short bottom questions. The original private first-book OCR/raster replay remains an additional regression check. These new fixtures model the second-book structure; they are not a fresh on-device OCR replay of that book.
 
 Limitations: role scores are heuristic, and instructional panels whose headings are unreadable may remain unclassified. Mixed layouts without a tall outer sidebar, severe OCR corruption and ambiguous compact number/letter diagrams may still need manual review. Image-first anchor recall remains governed by the preserved 4B.2 selector. A region diagnostic is an exclusion overlay on the tentative question-bearing area, not a claim that every unclassified area contains questions.
+
+
+### 4B.3 continuation: both real corpora replayed
+
+Started from the clean `bfcf95b` implementation. Original-book exports remain in `app/build/anchor-replay`. The available tablet's second book was exported with the existing opt-in instrumentation method into a separate ignored local directory, `app/build/region-replay-second`. The installed test APK was stale and initially failed with a method mismatch; rebuilding and replacing only that test APK resolved the export. App data was not cleared. These are actual OCR/raster inputs, not screenshot OCR or synthetic replacements.
+
+Repeated region-layer failures found in the second-book replay:
+
+- Sidebar headings at the upper body edge were discarded by the region-only header cutoff, and overlapping OCR word boxes prevented joining some titles. The region stage now uses the normal body header limit and tolerates small word-box overlaps.
+- Counting all tokens rewarded panel bounds that swallowed isolated main-question markers. Panel scoring now counts substantive text instead.
+- Within a sidebar page, ordinary prose/table alignment sometimes became a second question column and placed its boundary past the real marker lane. The region layer now uses repeated numeric marker lanes for this nested split and passes those established regions to the existing detector as single columns. Wide question areas without a second repeated marker lane remain wide. The ordinary-page gutter algorithm and final per-column intersection remain intact.
+- Contents OCR retained few dotted leaders, but retained aligned, increasing page references. Classification now combines that structural evidence with surviving leaders.
+- Real answer strips contain missing numbers, lowercase choices and incomplete cells. Compact sequential groups tolerate limited fragments while still requiring number/choice evidence and rejecting nearby explanatory prose. Joined and fragmented OCR forms are both tested.
+
+`QuestionAnchorDetector` is unchanged. No book/page-specific runtime rule was added. `QuestionRegionReplayTest` records regions, candidate decisions and crops for all 16 second-book pages, checks both sidebar orientations, one/two question columns, non-question exclusion, full-image start on page 18, and preservation of the lower numbered-diagram prompt on page 19. Ordinary CI uses independent geometry fixtures; private replay files are optional and untracked.
+
+Second-book observed proposal counts (not runtime rules):
+
+| PDF page | Proposals | Visible questions |
+|---|---:|---:|
+| 6 (contents) | 0 | 0 |
+| 8 | 5 | 5 |
+| 9 | 5 | 5 |
+| 10 | 3 | 5 |
+| 11 | 4 | 5 |
+| 12 | 6 | 6 |
+| 13 | 5 | 5 |
+| 14 | 6 | 6 |
+| 15 | 6 | 7 |
+| 16 | 5 | 5 |
+| 17 | 5 | 6 |
+| 18 | 2 | 2 |
+| 19 | 2 | 2 |
+| 20 | 2 | 4 |
+| 21 | 5 | 5 |
+| 22 | 3 | 5 |
+
+Counts alone do not establish perfect crop accuracy. All detected sidebar regions and answer strips on the replayed normal question pages are excluded from proposals. Pages 18/19 preserve the wide question area instead of splitting image/table text into artificial columns. Page 22 is no longer empty, but right-column recall is incomplete. Remaining misses recur on image/diagram-first starts: candidates reach the unchanged validator and can fail learned-margin or following-content checks. They remain a documented anchor-recall limitation rather than being bypassed by weaker validation in this region change. No final APK on-device UI retest was performed; validation used fresh on-device extraction and local detector replays.
+
+
+### Follow-up: anchors inside classified question regions
+
+Replayed the saved second-book OCR/raster inputs, including fresh device exports
+for pages 23, 25 and 27. The repeated causes were horizontal tolerances changing
+meaning after region normalization; immediate-prose validation rejecting printed
+numbers before graphics; and interior option/measurement numbers competing with
+real question margins. Question-lane diagnostics additionally showed interior
+numeric lanes selected on pages 21, 23 and 25. Sidebar roles were correct.
+
+Horizontal tolerances now retain their page-space meaning. Compact margin markers
+can use a substantial raster block followed by later text as supporting evidence.
+Inline prefixes and weak splits inside an active question face stricter validation.
+Question-lane selection favors plausible outer start lanes over populous interior
+numeric lanes. Sidebar classification, source selection, persistence and final
+column clamps are preserved.
+
+Actual raster coverage assertions check complete image/diagram/prompt/option
+extents on pages 10, 11, 17, 18, 20, 21, 22, 23, 25 and 27, including page 18's
+previously successful wide image question. These supplement proposal counts and
+role/clamp assertions. Original-book replay remains a separate regression gate.
+Private corpus inputs remain optional ignored build artifacts, so those replay
+tests skip on machines without the exports; synthetic anchor tests always run.
+
+Known remaining corpus limitation: page 23's answer strip contains an OCR duplicate
+number (4 read as 1), and the existing key classifier rejects that inconsistent
+sequence. The strip is still included at the bottom of the last crops. This
+follow-up does not weaken answer-key validation to accommodate that ambiguity.
+
+
+### Sequence-aware holdout evaluation
+
+See [sequence and local-band validation](milestone-4b-sequence-validation.md) for the fixed development/validation split, pre/post anchor and crop metrics, and remaining failures. No detector tuning followed the validation replay.

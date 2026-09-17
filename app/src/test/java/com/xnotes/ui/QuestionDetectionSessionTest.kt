@@ -1,6 +1,7 @@
 package com.xnotes.ui
 
 import com.xnotes.core.model.*
+import com.xnotes.core.verification.*
 import com.xnotes.platform.*
 import java.io.File
 import kotlinx.coroutines.*
@@ -107,4 +108,45 @@ class QuestionDetectionSessionTest {
             assertTrue(session.status.contains("Notebook changed")); assertEquals(0,dir.listFiles()!!.size)
         } finally { work.cancel() }
     }
+    @Test fun aiCorrectionsRequireReviewAndCanRestoreOriginalWithoutSaving() = runBlocking {
+        val dir=temp.newFolder(); val work=CoroutineScope(coroutineContext+SupervisorJob())
+        var calls=0
+        try {
+            val session=QuestionDetectionSession(temp.newFile(),"uri","Title",listOf(0),QuestionSetRepository(dir),
+                work,{true},{Reader()}, QuestionCropVerifier { _,p -> calls++
+                    VerificationResult(listOf(VerificationOperation(VerificationAction.ADJUST,p.single().id,.1,.1,.9,.9)))
+                },"fake",{ VerifierPageInput(it,byteArrayOf(1)) })
+            session.scan(listOf(0)); until { !session.busy }; session.review(0)
+            val original=session.proposals
+            delay(20); assertEquals(0,calls) // Opt-in only.
+            session.enableAi(true); until { session.aiStatuses[0]?.startsWith("AI verified") == true }
+            assertEquals(.9,session.proposals.single().crop.bottom,0.0)
+            assertFalse(session.proposals.single().accepted)
+            assertEquals(0,dir.listFiles()!!.size)
+            session.revertAi(0)
+            assertEquals(original,session.proposals)
+            session.review(0); delay(20); assertEquals(1,calls)
+            session.cancel()
+        } finally { work.cancel() }
+    }
+    @Test fun startingManualGestureProtectsAgainstPendingAiDelete() = runBlocking {
+        val dir=temp.newFolder(); val work=CoroutineScope(coroutineContext+SupervisorJob())
+        val entered=CompletableDeferred<Unit>(); val gate=CompletableDeferred<Unit>()
+        try {
+            val session=QuestionDetectionSession(temp.newFile(),"uri","Title",listOf(0),QuestionSetRepository(dir),
+                work,{true},{Reader()}, QuestionCropVerifier { _,p -> entered.complete(Unit); gate.await()
+                    VerificationResult(listOf(VerificationOperation(VerificationAction.DELETE,p.single().id)))
+                },"fake",{ VerifierPageInput(it,byteArrayOf(1)) })
+            session.scan(listOf(0)); until { !session.busy }; session.review(0); session.enableAi(true)
+            withTimeout(5000) { entered.await() }
+            val original=session.proposals
+            session.beginManualReview(0); gate.complete(Unit); delay(20)
+            assertEquals(original,session.proposals)
+            session.edit(original.single().id,NormalizedRect(.1,.1,.8,.8))
+            assertEquals(.8,session.proposals.single().crop.bottom,0.0)
+            assertEquals(0,dir.listFiles()!!.size)
+            session.cancel()
+        } finally { work.cancel() }
+    }
+
 }

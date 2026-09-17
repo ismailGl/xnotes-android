@@ -42,15 +42,20 @@ fun QuestionDetectionScreen(editor: Editor) {
     val sourceFile = remember { doc.pdfFile!! }
     val sourceUri = remember { doc.path!! }
     val pages = remember { doc.pages.mapNotNull { it.pdfPage }.groupingBy { it }.eachCount().filterValues { it == 1 }.keys.sorted() }
+    val aiConfig = remember { GeminiVerifierConfig(com.xnotes.BuildConfig.GEMINI_API_KEY, com.xnotes.BuildConfig.GEMINI_MODEL) }
+    val aiRenderer = remember { VerifierPageRenderer(context.applicationContext, sourceFile) }
     val session = remember { QuestionDetectionSession(sourceFile, sourceUri, doc.title, pages,
         QuestionSetRepository(File(context.filesDir, "questions")), scope,
         { editor.state.document === doc && doc.pdfFile == sourceFile && doc.path == sourceUri &&
             doc.pages.mapNotNull { it.pdfPage }.groupingBy { it }.eachCount().filterValues { it == 1 }.keys.sorted() == pages },
-        { PdfTextExtractor(context, sourceFile) }) }
+        { PdfTextExtractor(context, sourceFile) },
+        verifier = if (com.xnotes.BuildConfig.DEBUG && aiConfig.available) GeminiQuestionCropVerifier(aiConfig) else null,
+        verifierVersion = aiConfig.version, verifierPage = aiRenderer::page) }
     var from by remember { mutableStateOf(((doc.pages.getOrNull(editor.state.currentPageIndex())?.pdfPage ?: pages.firstOrNull() ?: 0) + 1).toString()) }
     var to by remember { mutableStateOf(from) }
     var pageSlot by remember { mutableIntStateOf(0) }
     var selected by remember { mutableStateOf<String?>(null) }
+    var showAiDiagnostic by remember { mutableStateOf(false) }
     var debugLayout by remember { mutableStateOf(false) }
     var edit by remember { mutableStateOf(false) }
     var add by remember { mutableStateOf(false) }
@@ -81,19 +86,42 @@ fun QuestionDetectionScreen(editor: Editor) {
                 if (pages.size != doc.pages.count { it.pdfPage != null }) Text("Pages with ambiguous PDF mappings are excluded; each source page must match one notebook page.")
                 if (session.busy || session.saving) LinearProgressIndicator(Modifier.fillMaxWidth())
                 val page = session.pages.getOrNull(pageSlot)
+                LaunchedEffect(page) { session.review(page) }
+                LaunchedEffect(page, edit) { if (edit && page != null) session.beginManualReview(page) }
                 val proposal = session.proposals.firstOrNull { it.id == selected }
                 Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { pageSlot--; selected = null }, enabled = pageSlot > 0 && !session.saving) { Text("◀ Page") }
                     Text(if (page == null) "No preview" else "PDF page ${page + 1}" +
                         (session.pageSources[page]?.let { " · ${it.label}" } ?: ""))
                     TextButton(onClick = { pageSlot++; selected = null }, enabled = pageSlot + 1 < session.pages.size && !session.saving) { Text("Page ▶") }
-                    TextButton(onClick = { edit = !edit; add = false }, enabled = !session.busy && !session.saving) { Text(if (edit) "Edit rectangles ✓" else "Pan / zoom ✓ · Edit") }
-                    TextButton(onClick = { edit = true; add = true; selected = null }, enabled = page != null && !session.busy && !session.saving) { Text(if (add) "Draw a rectangle…" else "Add rectangle") }
+                    TextButton(onClick = { edit = !edit; add = false; if (edit) page?.let(session::beginManualReview) }, enabled = !session.busy && !session.saving) { Text(if (edit) "Edit rectangles ✓" else "Pan / zoom ✓ · Edit") }
+                    TextButton(onClick = { edit = true; add = true; selected = null; page?.let(session::beginManualReview) }, enabled = page != null && !session.busy && !session.saving) { Text(if (add) "Draw a rectangle…" else "Add rectangle") }
                     TextButton(onClick = { selected?.let { session.accept(it, true) } }, enabled = proposal != null && !session.busy && !session.saving) { Text("Accept") }
                     TextButton(onClick = { selected?.let { session.accept(it, false) } }, enabled = proposal != null && !session.busy && !session.saving) { Text("Reject") }
                     TextButton(onClick = session::acceptAll, enabled = !session.busy && !session.saving) { Text("Accept All") }
                     Button(onClick = { session.commit { message -> editor.message = message; editor.questionRevision++; editor.closeQuestionDetection() } },
                         enabled = session.proposals.any { it.accepted } && !session.busy && !session.saving) { Text("Add accepted (${session.proposals.count { it.accepted }})") }
+                }
+                if (com.xnotes.BuildConfig.DEBUG) {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                        Switch(checked = session.aiEnabled, onCheckedChange = session::enableAi,
+                            enabled = session.aiAvailable && !session.saving && !session.busy)
+                        Text(if (session.aiAvailable) "AI verify · sends page images to Google (up to 10 pages ahead)"
+                            else "AI unavailable · configure GEMINI_API_KEY in local development settings")
+                        TextButton(onClick = { edit = false; add = false; selected = null; page?.let(session::verifyPage) },
+                            enabled = page != null && session.aiEnabled && !session.busy && !session.saving) { Text("Verify page") }
+                        TextButton(onClick = { page?.let(session::revertAi); selected = null },
+                            enabled = page != null && !session.busy && !session.saving && session.aiStatuses.containsKey(page)) { Text("Restore detector crops") }
+                    }
+                    if (session.aiEnabled) Text(session.aiStatuses[page] ?: "AI ready · waiting for completed scan")
+                    session.aiDiagnostics[page]?.let { diagnostic ->
+                        TextButton(onClick = { showAiDiagnostic = !showAiDiagnostic }) {
+                            Text(if (showAiDiagnostic) "Hide AI response diagnostic" else "Show AI response diagnostic")
+                        }
+                        if (showAiDiagnostic) SelectionContainer {
+                            Text(diagnostic, Modifier.heightIn(max = 180.dp).verticalScroll(rememberScrollState()))
+                        }
+                    }
                 }
                 TextButton(onClick = { debugLayout = !debugLayout }) { Text(if (debugLayout) "Hide layout diagnostics" else "Layout diagnostics") }
                 if (debugLayout) session.pageDiagnostics[page]?.let { d ->
