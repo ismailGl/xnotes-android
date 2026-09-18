@@ -759,15 +759,10 @@ private fun EditorScreen(
             )
             val questionSession = focused.questionSession
             if (focused.questionDetectionOpen) com.xnotes.ui.QuestionDetectionScreen(focused)
+            SplitHost(editor, actions)
             if (questionSession != null && focused.noteOpen) {
-                Column(Modifier.fillMaxSize().then(SwallowTouches)) {
-                    Toolbar(focused, onToggleFullscreen, focused::closeQuestionMode, {}, {})
-                    Box(Modifier.weight(1f)) {
-                        com.xnotes.ui.QuestionModeScreen(questionSession, focused::closeQuestionMode)
-                    }
-                }
-            } else {
-                SplitHost(editor, actions)
+                BackHandler { if (questionSession.peek == com.xnotes.ui.QuestionPeek.FADED) questionSession.cyclePeek() else focused.closeQuestionMode() }
+                com.xnotes.ui.QuestionModeScreen(focused, questionSession)
             }
         }
     }
@@ -896,7 +891,7 @@ private class ExportProgress(val done: Int, val total: Int, val counting: String
  * window. Each callback takes the pane it is acting for, because in a split there are two of them
  * and a picker's result has to come back to the one that opened it.
  */
-private class PaneActions(
+private data class PaneActions(
     val onToggleFullscreen: () -> Unit,
     /** Leave for the backstage, closing every open pane. */
     val onOpenBackstage: () -> Unit,
@@ -1059,13 +1054,23 @@ private fun EditorPane(
                     .background((if (focused) palette.accent else palette.border).toComposeColor()),
             )
         }
-        if (editor.canvasOpen) {
+        val question = editor.questionSession
+        if (question?.peek == com.xnotes.ui.QuestionPeek.FADED) {
+            val peek = editor.questionPeekEditor
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                if (peek != null) EditorPane(peek, peek,
+                    actions.copy(onOpenBackstage = question::cyclePeek), false, Modifier.fillMaxSize())
+                if (question.loadingView) androidx.compose.material3.CircularProgressIndicator(Modifier.align(Alignment.Center))
+            }
+            com.xnotes.ui.QuestionBottomBar(editor, question)
+        } else if (editor.canvasOpen || question != null) {
             val canvas = editor.infinite
             com.xnotes.ui.InfiniteToolbar(
                 canvas,
-                onOpenBackstage = actions.onOpenBackstage,
+                onOpenBackstage = { if (question != null) editor.closeQuestionMode() else actions.onOpenBackstage() },
                 onInsertImage = { actions.onInsertCanvasImage(editor, null) },
                 onClosePane = onClose,
+                onToggleFullscreen = actions.onToggleFullscreen,
             )
             Box(modifier = Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
                 AndroidView(
@@ -1076,12 +1081,16 @@ private fun EditorPane(
                 com.xnotes.ui.SelectionMenu(canvas)
                 com.xnotes.ui.LongPressMenu(canvas, onInsertImageAt = { c -> actions.onInsertCanvasImage(editor, c) })
                 com.xnotes.ui.CanvasDebugOverlay(canvas)
+                if (question?.busy == true) Box(Modifier.fillMaxSize().then(SwallowTouches), contentAlignment = Alignment.Center) {
+                    androidx.compose.material3.CircularProgressIndicator()
+                }
             }
+            if (question != null) com.xnotes.ui.QuestionBottomBar(editor, question)
         } else {
             Toolbar(
                 editor,
                 onToggleFullscreen = actions.onToggleFullscreen,
-                onOpenBackstage = actions.onOpenBackstage,
+                onOpenBackstage = { if (editor.questionSession != null) editor.closeQuestionMode() else actions.onOpenBackstage() },
                 onInsertImage = { actions.onInsertImage(editor, null) },
                 onAddStickers = actions.onAddStickers,
                 onClosePane = onClose,

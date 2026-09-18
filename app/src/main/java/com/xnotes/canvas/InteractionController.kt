@@ -162,6 +162,7 @@ class InteractionController(
     var inkColor: Rgba = InkPalette.DEFAULT
 
     /** Whether a finger draws (true) or pans (false). The stylus always uses the armed tool. */
+    var readOnly: Boolean = false
     var fingerDraws: Boolean = false
 
     /** Panning allowed while zoom is locked: "single" (default) | "double" | "none". */
@@ -555,6 +556,7 @@ class InteractionController(
         val buttonHeld = drawingIsStylus &&
             ((e.buttonState and STYLUS_BUTTON_MASK) != 0 || stylusButtonHeld)
         val effectiveTool: Tool = when {
+            readOnly -> Tool.PAN
             toolType == MotionEvent.TOOL_TYPE_ERASER -> Tool.ERASER
             buttonHeld && penButtonTool != null -> penButtonTool!!
             // While something is selected, the stylus grabs that selection (resize on a handle,

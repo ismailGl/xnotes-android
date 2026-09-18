@@ -6,13 +6,12 @@ import com.xnotes.core.model.QuestionSet
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.util.UUID
 
 /** Separate versioned JSON; failures propagate so the UI never reports an unsaved question as saved. */
-class QuestionSetRepository(private val directory: File) {
+class QuestionSetRepository(private val storage: QuestionFiles) {
+    constructor(directory: File) : this(LocalQuestionFiles(directory))
     /** A malformed entry keeps its position in the viewer; strict decoding for writes is unchanged. */
     data class Entry(val question: Question?, val error: String? = null)
     data class LoadedSet(val id: String, val title: String, val entries: List<Entry>)
@@ -22,12 +21,12 @@ class QuestionSetRepository(private val directory: File) {
         require(notebookUri.isNotBlank()) { "Save the notebook before opening Question Mode" }
         val (id, hash) = sourceIdentity(notebookUri, pdf)
         synchronized(writeLock) {
-            val file = File(directory, "$id.json")
-            if (!file.exists()) return null
-            val root = JSONObject(file.readText(Charsets.UTF_8))
+            val bytes = storage.read("$id.json") ?: return null
+            val root = JSONObject(bytes.toString(Charsets.UTF_8))
             require(root.getInt("version") == 1) { "Unsupported question set version" }
             require(root.getString("id") == id && root.getString("sourceNotebookUri") == notebookUri &&
                 root.getString("sourcePdfSha256") == hash) { "Question set does not match this PDF-backed notebook" }
+            finishDeletes(root, id)
             val items = root.getJSONArray("questions")
             val entries = (0 until items.length()).map { i ->
                 try {
@@ -53,8 +52,8 @@ class QuestionSetRepository(private val directory: File) {
         require(expectedSourceId == null || expectedSourceId == id) { "The source PDF changed; scan again" }
         // Both split panes may append to the same set through different repository instances.
         synchronized(writeLock) {
-            val file = File(directory, "$id.json")
-            val old = if (file.exists()) decode(file.readText(Charsets.UTF_8)) else
+            val bytes = storage.read("$id.json")
+            val old = if (bytes != null) decode(bytes.toString(Charsets.UTF_8)) else
                 QuestionSet(id, title, emptyList(), notebookUri, hash)
             require(old.id == id && old.sourceNotebookUri == notebookUri && old.sourcePdfSha256 == hash)
             val accepted = old.questions.toMutableList()
@@ -64,17 +63,67 @@ class QuestionSetRepository(private val directory: File) {
             }
             if (accepted.size == old.questions.size) return old
             val updated = old.copy(title = title, questions = accepted)
-            Files.createDirectories(directory.toPath())
-            val temp = File.createTempFile("question-", ".tmp", directory)
-            try {
-                temp.outputStream().use { out ->
-                    out.write(encode(updated).toByteArray(Charsets.UTF_8))
-                    out.fd.sync()
-                }
-                Files.move(temp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-            } finally { temp.delete() }
+            storage.write("$id.json") { it.write(encode(updated).toByteArray(Charsets.UTF_8)) }
             return updated
         }
+    }
+
+    fun updateCrop(notebookUri: String, pdf: File, questionId: String, crop: NormalizedRect): Question {
+        val (id, hash) = sourceIdentity(notebookUri, pdf)
+        synchronized(writeLock) {
+            val root = JSONObject(requireNotNull(storage.read("$id.json")).toString(Charsets.UTF_8))
+            require(root.getInt("version") == 1 && root.getString("id") == id &&
+                root.getString("sourceNotebookUri") == notebookUri && root.getString("sourcePdfSha256") == hash)
+            val questions = root.getJSONArray("questions")
+            val target = (0 until questions.length()).map { questions.getJSONObject(it) }.single { it.optString("id") == questionId }
+            val updated = Question(questionId, target.getInt("sourcePageIndex"), crop)
+            target.put("crop", JSONObject().put("left", crop.left).put("top", crop.top)
+                .put("right", crop.right).put("bottom", crop.bottom))
+            storage.write("$id.json") { it.write(root.toString().toByteArray(Charsets.UTF_8)) }
+            return updated
+        }
+    }
+
+    /** Journal first, then idempotent cleanup. Reopening finishes an interrupted deletion. */
+    fun deleteQuestion(notebookUri: String, pdf: File, questionId: String) {
+        require(questionId.matches(Regex("[A-Za-z0-9_-]{1,128}")))
+        val (id, hash) = sourceIdentity(notebookUri, pdf)
+        synchronized(writeLock) {
+            val root = JSONObject(requireNotNull(storage.read("$id.json")).decodeToString())
+            require(root.getString("sourceNotebookUri") == notebookUri && root.getString("sourcePdfSha256") == hash)
+            val pending = root.optJSONArray("pendingDeletes") ?: JSONArray()
+            if ((0 until pending.length()).none { pending.getString(it) == questionId }) pending.put(questionId)
+            root.put("pendingDeletes", pending)
+            storage.write("$id.json") { it.write(root.toString().toByteArray()) }
+            finishDeletes(root, id)
+        }
+    }
+
+    private fun finishDeletes(root: JSONObject, setId: String) {
+        val pending = root.optJSONArray("pendingDeletes") ?: return
+        val ids = (0 until pending.length()).map { pending.getString(it) }.toSet()
+        ids.forEach { require(it.matches(Regex("[A-Za-z0-9_-]{1,128}"))) }
+        storage.read("$setId/state.json")?.let { bytes ->
+            val state = JSONObject(bytes.decodeToString())
+            listOf("choices", "answerOptions", "results", "answerKeys").forEach { key ->
+                state.optJSONObject(key)?.let { map -> ids.forEach(map::remove) }
+            }
+            state.optJSONArray("completed")?.let { completed ->
+                state.put("completed", JSONArray((0 until completed.length()).map { completed.getString(it) }.filterNot { it in ids }))
+            }
+            if (state.optString("lastQuestionId") in ids) state.put("lastQuestionId", JSONObject.NULL)
+            storage.write("$setId/state.json") { it.write(state.toString().toByteArray()) }
+        }
+        for (id in ids) {
+            storage.delete("$setId/questions/$id")
+            storage.delete("$setId/answers/$id.xnote")
+        }
+        val questions = root.getJSONArray("questions")
+        root.put("questions", JSONArray((0 until questions.length()).map { questions.getJSONObject(it) }.filterNot { it.optString("id") in ids }))
+        root.remove("pendingDeletes")
+        storage.write("$setId.json") { it.write(root.toString().toByteArray()) }
+        storage.delete("$setId/state.json.previous")
+        storage.delete("$setId.json.previous")
     }
 
     /** Capture identity even when no set exists yet; never creates a file. */

@@ -426,17 +426,19 @@ class CanvasView @JvmOverloads constructor(
 
     /** Ink-only overlay; the host renders the page background below this View. */
     var transparentPaper: Boolean = false
+    /** Visibility only; cached ink, document items and history are never changed by page peek. */
+    var questionInkAlpha: Int = 255
 
     override fun onDraw(canvas: Canvas) {
         val st = state ?: return
-        val cropClip = st.pageCrop?.let { st.fromPageSpaceRect(0, it) }
+        val cropClip = st.pageCrop?.let { st.fromPageSpaceRect(st.cropPageIndex, it) }
+        if (!transparentPaper) canvas.drawColor(st.palette.bg.toArgb())
         val cropSave = if (cropClip != null) canvas.save() else null
         cropClip?.let {
             val a = st.contentToViewport(it.topLeft)
             val b = st.contentToViewport(com.xnotes.core.geometry.Pt(it.right, it.bottom))
             canvas.clipRect(a.x.toFloat(), a.y.toFloat(), b.x.toFloat(), b.y.toFloat())
         }
-        if (!transparentPaper) canvas.drawColor(st.palette.bg.toArgb())
 
         val r = AndroidRenderer(canvas)
         val origin = st.origin()
@@ -463,6 +465,7 @@ class CanvasView @JvmOverloads constructor(
             // A live caret session lifts the flow out of the ink cache; paint it
             // immediate-mode here (under the ink, over the background) so every
             // keystroke shows without waiting for a cache rebuild.
+            val inkSave = if (questionInkAlpha != 255) canvas.saveLayerAlpha(null, questionInkAlpha) else null
             if (st.flowLifted) {
                 r.withSave {
                     r.clipRect(pr)
@@ -472,6 +475,7 @@ class CanvasView @JvmOverloads constructor(
                 }
             }
             st.cacheForOrSchedule(page)?.let { blitPageSurface(r, st, page, pr, it.surface) }
+            if (inkSave != null) canvas.restoreToCount(inkSave)
         }
         r.restore()
 
@@ -496,7 +500,7 @@ class CanvasView @JvmOverloads constructor(
         // render with the content (so short pans stay sharp) and let the soft cache show only in
         // the strip panning into view; once the view settles we re-render the sharp viewport for
         // the new area. A zoom change drops back to the soft caches until the settle re-render.
-        if (!transparentPaper && st.isPastResolutionCap()) {
+        if (!transparentPaper && questionInkAlpha == 255 && st.isPastResolutionCap()) {
             val blit = st.sharpViewportBlit()
             if (blit != null) {
                 val dw = blit.base.width * blit.scale
@@ -540,6 +544,7 @@ class CanvasView @JvmOverloads constructor(
             st.clearSharpViewport()
         }
 
+        val highlighterSave = if (questionInkAlpha != 255) canvas.saveLayerAlpha(null, questionInkAlpha) else null
         // Highlighters composite here, over the finished page (paper + background + ink), so
         // their MULTIPLY blend darkens against everything beneath instead of washing it out —
         // matching the live preview. They're few and drawn at screen resolution (so crisp at
@@ -572,7 +577,8 @@ class CanvasView @JvmOverloads constructor(
             }
         }
 
-        drawOverlay?.invoke(r, canvas)
+        if (highlighterSave != null) canvas.restoreToCount(highlighterSave)
+        if (questionInkAlpha == 255) drawOverlay?.invoke(r, canvas)
 
         // Elastic "pull past the end to add a page" affordance, on top of everything (viewport space).
         if (st.overscrollY > 1.0) {

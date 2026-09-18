@@ -224,7 +224,7 @@ data class Preferences(
                 canvasMaxZoomPercent = o.optInt("canvas_max_zoom_percent", 6400).coerceIn(200, 100000),
                 maxCacheResolution = o.optInt("max_cache_resolution", 2048).coerceIn(1024, 4096),
                 disableFrontBuffering = o.optBoolean("disable_front_buffering", false),
-                startFullscreen = if (o.has("start_fullscreen")) o.getBoolean("start_fullscreen") else null,
+                startFullscreen = if (o.has("start_fullscreen") && !o.isNull("start_fullscreen")) o.optBoolean("start_fullscreen") else null,
                 codeThemePath = o.optString("code_theme_path").ifEmpty { null },
                 codeThemeName = o.optString("code_theme_name").ifEmpty { null },
                 defaultCodeLanguage = o.optString("default_code_language", "cpp")

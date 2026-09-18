@@ -108,7 +108,10 @@ fun Toolbar(
         ) {
             // The bar is driven by the user-customisable layout; separators sit between non-empty
             // sections, and each item dispatches to its renderer (see ToolbarItemView).
-            editor.toolbarLayout.visibleSections.forEachIndexed { si, section ->
+            val questionItems = QUESTION_TOOLBAR_ITEMS
+            editor.toolbarLayout.visibleSections.map { section ->
+                section.copy(entries = section.visibleEntries.filter { it.item !in questionItems && (!editor.isQuestionPeek || it.item in setOf(ToolbarItem.HOME, ToolbarItem.PAGE_NAV, ToolbarItem.ZOOM, ToolbarItem.FIT, ToolbarItem.ZOOM_LOCK, ToolbarItem.VIEW, ToolbarItem.FULLSCREEN)) })
+            }.filter { it.hasVisible }.forEachIndexed { si, section ->
                 if (si > 0) Separator()
                 section.visibleEntries.forEach { entry ->
                     ToolbarItemView(
@@ -160,18 +163,14 @@ private fun ToolbarItemView(
     onAddStickers: () -> Unit,
     onToggleFullscreen: () -> Unit,
 ) {
-    if (editor.questionSession != null && item !in setOf(ToolbarItem.HOME,
-            ToolbarItem.PEN, ToolbarItem.DASHED, ToolbarItem.CALLIGRAPHY, ToolbarItem.SPEED,
-            ToolbarItem.TAPER, ToolbarItem.HIGHLIGHTER, ToolbarItem.ERASER, ToolbarItem.PAN,
-            ToolbarItem.SELECT, ToolbarItem.LASSO, ToolbarItem.SHAPE, ToolbarItem.UNDO,
-            ToolbarItem.REDO, ToolbarItem.COLORS, ToolbarItem.FULLSCREEN)) return
-    val questionTools = editor.questionSession?.tools
-    val popupHost: ToolPopupHost = questionTools ?: editor
+    val popupHost: ToolPopupHost = editor
     when (item) {
+        ToolbarItem.QUESTION_NAV, ToolbarItem.QUESTION_ANSWER, ToolbarItem.QUESTION_PEEK, ToolbarItem.QUESTION_CROP, ToolbarItem.QUESTION_DELETE ->
+            editor.questionSession?.let { QuestionToolbarItem(editor, it, item) }
         // Canvas-only items; a stored paged layout can never hold one, so nothing is drawn.
         ToolbarItem.WAYPOINTS, ToolbarItem.MINIMAP -> Unit
 
-        ToolbarItem.HOME -> ToolbarIcon(XnotesIcons.prev, if (questionTools == null) "Home" else "Back to notebook") { onOpenBackstage() }
+        ToolbarItem.HOME -> ToolbarIcon(XnotesIcons.prev, if (editor.questionSession == null) "Home" else "Back to notebook") { onOpenBackstage() }
         ToolbarItem.TITLE -> Label(
             editor.title,
             modifier = Modifier
@@ -210,9 +209,9 @@ private fun ToolbarItemView(
         ToolbarItem.IMAGE -> ImageMenu(editor, onInsertImage, onAddStickers)
 
         ToolbarItem.UNDO -> ToolbarIcon(XnotesIcons.undo, "Undo", enabled =
-            if (questionTools == null) editor.canUndo else questionTools.active?.canUndo == true && editor.questionSession?.busy == false) { editor.undo() }
+            editor.canUndo && editor.questionSession?.busy != true) { editor.undo() }
         ToolbarItem.REDO -> ToolbarIcon(XnotesIcons.redo, "Redo", enabled =
-            if (questionTools == null) editor.canRedo else questionTools.active?.canRedo == true && editor.questionSession?.busy == false) { editor.redo() }
+            editor.canRedo && editor.questionSession?.busy != true) { editor.redo() }
 
         ToolbarItem.PAGE_NAV -> {
             ToolbarIcon(XnotesIcons.prev, "Previous page") { editor.prevPage() }
@@ -298,16 +297,13 @@ private fun ToolButton(
     setConfigForTool: (Tool?) -> Unit,
 ) {
     if (icon == null) return
-    val tools = editor.questionSession?.tools
-    val activeTool = tools?.tool ?: editor.tool
-    val host: ToolPopupHost = tools ?: editor
+    val activeTool = editor.tool
+    val host: ToolPopupHost = editor
     Box {
         ToolbarIcon(icon, tool.name,
             enabled = editor.questionSession?.busy != true,
             active = activeTool == tool && !(tool == Tool.SCREENSHOT && editor.questionSelection)) {
             if (activeTool == tool && (tool.isStroke || tool == Tool.SHAPE || tool == Tool.ERASER || tool == Tool.SELECT || tool == Tool.TEXT)) {
-                // Clicking the displayed fallback is an explicit shared-tool choice too.
-                if (tools?.usingFallback == true) editor.selectTool(tool)
                 setConfigForTool(tool)
             } else {
                 editor.selectTool(tool)

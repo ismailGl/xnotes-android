@@ -5,11 +5,34 @@ import com.xnotes.platform.JsonStore
 
 /** Loads/saves [Settings] via the atomic, failure-tolerant [JsonStore]. */
 class SettingsRepository(context: Context) {
-    private val store = JsonStore.settings(context.applicationContext)
+    private val app = context.applicationContext
+    private val store = JsonStore.settings(app)
 
-    fun load(): Settings = Settings.fromJson(store.read())
+    private fun folder(settings: Settings): FolderSettingsStore? {
+        val tree = settings.browseRoot ?: return null
+        if (android.net.Uri.parse(tree).authority == app.packageName + ".documents") return null
+        return FolderSettingsStore(com.xnotes.platform.FolderQuestionFiles(app, tree, null, ".xnote"))
+    }
 
-    fun save(settings: Settings) = store.write(settings.toJson())
+    fun load(): Settings = restoreFolder(Settings.fromJson(store.read()))
+
+    /** Restore before publishing the current installation's settings into a newly granted folder. */
+    fun restoreFolder(local: Settings): Settings = runCatching {
+        folderIo.submit<Settings> { folder(local)?.restore(local) ?: local }.get()
+    }.getOrDefault(local).also { store.write(it.toJson()) }
+
+    fun save(settings: Settings) {
+        store.write(settings.toJson())
+        folderIo.execute {
+            try { folder(settings)?.save(settings) }
+            catch (_: Exception) { android.util.Log.w("Settings", "Folder settings could not be saved; local settings retained") }
+        }
+    }
+
+    companion object {
+        // Shared across split panes: older writes cannot overtake a restore or a newer edit.
+        private val folderIo = java.util.concurrent.Executors.newSingleThreadExecutor()
+    }
 }
 
 /**

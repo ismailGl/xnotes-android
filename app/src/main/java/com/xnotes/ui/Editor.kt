@@ -87,6 +87,7 @@ import java.io.OutputStream
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -453,7 +454,6 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         private set
     var questionSession by mutableStateOf<QuestionSession?>(null)
         private set
-    private val questionHistory = QuestionHistoryCache()
     var questionDetectionOpen by mutableStateOf(false)
     var questionRevision by mutableStateOf(0)
     fun startQuestionDetection() {
@@ -467,6 +467,12 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         sharedToolState.preserveDuringCleanup { controller.setTool(sharedToolState.tool) }
         view.requestRender()
     }
+    var questionPeekEditor by mutableStateOf<Editor?>(null)
+        private set
+    var isQuestionPeek = false
+        private set
+    private var questionWorkspace: QuestionCanvasWorkspace? = null
+
     var openingQuestions by mutableStateOf(false)
         private set
 
@@ -474,7 +480,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         val uri = doc.path ?: return null
         val pdf = doc.pdfFile ?: return null
         return withContext(Dispatchers.IO) {
-            com.xnotes.platform.QuestionSetRepository(java.io.File(appContext.filesDir, "questions")).find(uri, pdf)
+            questionRepository().find(uri, pdf)
         }
     }
 
@@ -490,40 +496,31 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
                 if (state.document === doc && doc.path == uri && doc.pdfFile == pdf && noteOpen && !canvasOpen) {
                     if (set == null) message = "No questions saved for this notebook"
                     else {
-                        val answerCodec = DocumentCodec(AndroidImageCodec(), AndroidTextMeasurer())
-                        val root = java.io.File(appContext.filesDir, "questions")
-                        val configs = ToolDefaults.persistedTools.associateWith { settings.configFor(it) }
-                        val tools = QuestionTools(configs, toolbarColors, activeColorIndex, recentColors, sharedToolState)
-                        val store = com.xnotes.platform.QuestionAnswerRepository(root, set.id, answerCodec)
-                        val progressStore = com.xnotes.platform.QuestionProgressRepository(root, set.id)
+                        val files = questionFiles()
+                        val progressStore = com.xnotes.platform.QuestionProgressRepository(files, set.id)
                         val progress = progressStore.load()
-                        // The lookup above suspends; never bind shared pages after a document swap.
                         if (state.document !== doc || !noteOpen || opening) return@launch
-                        sharedToolState.preserveDuringCleanup { controller.cancelForTransition() }
-                        controller.frontInk?.surfaceLost()
-                        val annotationStore = NotebookQuestionStore(doc, set.entries.mapNotNull { it.question }) {
-                            saveQuestionNotebook(doc)
-                        }
-                        val answers = QuestionAnswerSession(store,
-                            { answer, retainedHistory, changed ->
-                                AnswerCanvasController(viewContext, answer, buildPalette(settings.prefs), settings.prefs,
-                                    configs, tools.inkColor, changed, retainedHistory ?: History(), false,
-                                    tools::activate).also(tools::configure)
-                            }, memory = questionHistory, memoryPrefix = "${set.id}/answers/")
-                        val annotations = QuestionAnswerSession(annotationStore, { pageView, _, changed ->
-                            val binding = requireNotNull(annotationStore.current)
-                            AnswerCanvasController(viewContext, pageView, buildPalette(settings.prefs), settings.prefs,
-                                configs, tools.inkColor, {
-                                    doc.dirty = true
-                                    state.invalidatePage(binding.page)
-                                    refreshContent()
-                                    changed()
-                                }, history, true, tools::activate, binding::canApply, binding.crop).also(tools::configure)
-                        })
-                        tools.surfaces = { listOfNotNull(answers.surface as? AnswerCanvasController,
-                            annotations.surface as? AnswerCanvasController) }
-                        questionSession = QuestionSession(set, pdf, answers, annotations, tools,
-                            progressStore = progressStore, initialProgress = progress)
+                        controller.cancelForTransition()
+                        val canvas = infinite
+                        canvas.applyPalette(palette)
+                        canvas.applyInputPrefs(preferences.fingerDraws, controller.penButtonTool, preferences.zoomLockPan)
+                        canvas.applyZoomRange(preferences.canvasMinZoomPercent, preferences.canvasMaxZoomPercent)
+                        val workspace = QuestionCanvasWorkspace(viewContext, canvas, doc, set.id, files, imageDir) { message = it }
+                        questionWorkspace = workspace
+                        val initial = set.entries.firstOrNull { it.question?.id == progress.lastQuestionId } ?: set.entries.firstOrNull()
+                        try { workspace.open(initial?.question) }
+                        catch (e: Exception) { workspace.close(); questionWorkspace = null; throw e }
+                        questionSession = QuestionSession(set, pdf,
+                            progressStore = progressStore, initialProgress = progress,
+                            beforeTransition = { workspace.prepareTransition(); saveQuestionNotebook(doc) },
+                            onQuestionChanged = ::focusCurrentQuestion,
+                            onNavigate = workspace::open,
+                            onInputEnabled = { infinite.inputEnabled = it },
+                            onDelete = { id ->
+                                workspace.beginDelete()
+                                withContext(Dispatchers.IO) { com.xnotes.platform.QuestionSetRepository(files).deleteQuestion(uri, pdf, id) }
+                            })
+                        focusCurrentQuestion()
                     }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
@@ -532,17 +529,123 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         }
     }
 
+    fun questionFiles(): com.xnotes.platform.QuestionFiles {
+        val notebookUri = state.document.path?.let(android.net.Uri::parse)
+        val root = notebookUri?.takeIf { android.provider.DocumentsContract.isTreeUri(it) }?.toString()
+            ?: browseRoot ?: error("Choose an xNotes Folder first")
+        return com.xnotes.platform.FolderQuestionFiles(appContext, root, java.io.File(appContext.filesDir, "questions"))
+    }
+    fun questionRepository() = com.xnotes.platform.QuestionSetRepository(questionFiles())
+
+    /** Old separate answer sheets remain editable xnotes with their original question IDs. */
+    fun openPreviousQuestionAnswer() {
+        val session = questionSession ?: return
+        val id = session.current?.question?.id ?: return
+        autosaveScope.launch {
+            try {
+                val uri = withContext(Dispatchers.IO) {
+                    (questionFiles() as com.xnotes.platform.FolderQuestionFiles).documentUri("${session.set.id}/answers/$id.xnote")
+                }
+                if (uri == null) message = "This question has no previous answer sheets"
+                else closeQuestionModeThen { autosaveScope.launch { openAsync(uri, "Question ${session.index + 1} answer sheets") } }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { message = "Could not open the previous answer sheets" }
+        }
+    }
+
+    fun focusCurrentQuestion() {
+        val session = questionSession ?: return
+        if (session.peek == QuestionPeek.FOCUSED) return // The live xCanvas viewport and History stay intact.
+        if (session.loadingView) return
+        infinite.finishInput()
+        session.loadingView = true
+        autosaveScope.launch {
+            try {
+                val peek = questionPeekEditor ?: run {
+                    val doc = withContext(Dispatchers.IO) {
+                        val source = requireNotNull(com.xnotes.platform.PdfSource.create(appContext, session.sourcePdf))
+                        try { com.xnotes.platform.PdfImporter.import(source, state.document.dpi) } finally { source.close() }
+                    }
+                    Editor(viewContext, Pane.SECONDARY).also {
+                        it.state.document = doc
+                        it.isQuestionPeek = true
+                        it.controller.readOnly = true
+                        it.view.questionInkAlpha = 70
+                        it.rebuildPdfSource()
+                        it.state.relayout()
+                        it.noteOpen = true
+                        questionPeekEditor = it
+                    }
+                }
+                val question = session.current?.question
+                peek.state.document.pages.forEach { page ->
+                    page.items.clear()
+                    val items = if (page.pdfPage == question?.sourcePageIndex) infinite.document.items
+                        else state.document.pages.firstOrNull { it.pdfPage == page.pdfPage }?.items.orEmpty()
+                    page.items.addAll(items.map { it.deepCopy(textMeasurer) })
+                }
+                peek.state.refreshAllInk()
+                fun jumpToQuestionPage() {
+                    peek.state.goToPage(question?.sourcePageIndex ?: 0)
+                    peek.state.fitPage()
+                    peek.refreshView()
+                }
+                if (peek.state.viewportW > 0 && peek.state.viewportH > 0) jumpToQuestionPage()
+                else peek.view.afterLayout = { jumpToQuestionPage(); peek.view.afterLayout = { peek.refreshView() } }
+                peek.refreshContent()
+                peek.view.requestRender()
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { message = "Could not open Page Peek" }
+            finally { session.loadingView = false }
+        }
+    }
+
+    fun saveCurrentQuestionCrop(crop: com.xnotes.core.model.NormalizedRect) {
+        val session = questionSession ?: return
+        if (session.busy) return
+        val question = session.current?.question ?: return
+        val uri = state.document.path ?: return
+        session.savingCrop = true
+        autosaveScope.launch {
+            try {
+                val updated = withContext(Dispatchers.IO) { questionRepository().updateCrop(uri, session.sourcePdf, question.id, crop) }
+                if (questionSession === session) {
+                    session.replaceCrop(updated)
+                    questionWorkspace?.updateCrop(updated)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { message = "Could not finish updating the crop. Reopen Question Mode to reload the saved crop." }
+            finally { session.savingCrop = false }
+        }
+    }
+
     fun closeQuestionMode() = closeQuestionModeThen {}
 
     private fun closeQuestionModeThen(afterClose: () -> Unit) {
         val current = questionSession ?: run { afterClose(); return }
         current.close {
-            if (questionSession === current) {
-                questionSession = null
-                sharedToolState.preserveDuringCleanup { controller.setTool(sharedToolState.tool) }
-                refreshContent()
-                view.requestRender()
-                afterClose()
+            infinite.inputEnabled = false
+            autosaveScope.launch {
+                if (questionSession === current) {
+                    questionWorkspace?.close()
+                    questionWorkspace = null
+                    questionPeekEditor?.let { peek ->
+                        peek.pdfSource?.close()
+                        peek.pdfSource = null
+                        peek.state.invalidateAllCaches()
+                        peek.autosaveScope.cancel()
+                    }
+                    questionPeekEditor = null
+                    questionSession = null
+                    infinite.inputEnabled = true
+                    controller.readOnly = false
+                    state.pageCrop = null
+                    state.focusedPage = null
+                    view.questionInkAlpha = 255
+                    refreshContent()
+                    view.requestRender()
+                    afterClose()
+                }
             }
         }
     }
@@ -832,7 +935,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         onScreenshotMenu = { rect -> screenshotMenu = rect },
         onScreenshotTooSmall = { if (questionSelection) message = "Selection is too small" },
         onContextMenu = { vp, content, locked -> contextMenu = ContextMenuTarget(vp.x, vp.y, content, locked) },
-        onAddPageAtEnd = { addPageAtEnd() },
+        onAddPageAtEnd = { if (questionSession == null && !isQuestionPeek) addPageAtEnd() },
         onHaptic = { runCatching { view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS) } },
     )
 
@@ -1032,7 +1135,8 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         view.input = { ev ->
             // Any fresh canvas touch quietly retires the flow action bar and still does its job.
             if (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN) flowContextMenu = null
-            controller.onTouch(ev)
+            if (questionSession?.busy == true) true
+            else controller.onTouch(ev)
         }
         view.onTwoFingerTap = { dispatchTapGesture(preferences.twoFingerTap) }
         view.onThreeFingerTap = { dispatchTapGesture(preferences.threeFingerTap) }
@@ -1042,7 +1146,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         controller.frontInk = com.xnotes.canvas.FrontInk(state, view, pad)
         pad.onSurfaceLost = { controller.frontInk?.surfaceLost() }
         view.debugOverlay.frontHud = { controller.frontInk?.hud }
-        view.afterLayout = { refreshView() }
+        view.afterLayout = { if (questionSession != null) focusCurrentQuestion() else refreshView() }
         view.onScrollbarScrolled = { refreshView() }
         // The canvas starts at built-in defaults; push any non-default global View settings
         // (mode/rotation/scroll direction/scrollbar) into it before the first document lands.
@@ -1111,7 +1215,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         autosaveScope.launch {
             val result = runCatching {
                 withContext(Dispatchers.IO) {
-                    com.xnotes.platform.QuestionSetRepository(java.io.File(appContext.filesDir, "questions"))
+                    questionRepository()
                         .append(uri, title, pdf, question)
                 }
             }
@@ -1856,9 +1960,10 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     /** Snapshot live state into settings and save (call on pause/stop). */
     fun persist() {
         questionSession?.background()
+        questionWorkspace?.background()
         // A style tuned on the canvas is the same style, so whichever surface was last used wins.
         val fromCanvas = infiniteOrNull
-        if (fromCanvas != null && canvasOpen) {
+        if (fromCanvas != null && (canvasOpen || questionSession != null)) {
             for (t in ToolDefaults.persistedTools) controller.setToolConfig(t, fromCanvas.toolConfig(t))
             controller.shapeConfig = fromCanvas.shapeConfig
             shapeConfig = fromCanvas.shapeConfig
@@ -2669,7 +2774,22 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
 
     fun updateBrowseRoot(treeUri: String) {
         browseRoot = treeUri
-        settings = settings.copy(browseRoot = treeUri)
+        settings = settingsRepo.restoreFolder(settings.copy(browseRoot = treeUri))
+        fun applyRestored(editor: Editor) {
+            editor.applySettings()
+            editor.viewDefaults = settings.viewDefaults
+            editor.newNoteStyle = settings.newNoteStyle
+            editor.newNoteFlow = settings.newNoteFlow
+            editor.newCanvasBackground = settings.newCanvasBackground
+            editor.fullscreen = settings.prefs.startFullscreen ?: !editor.deviceHasDisplayCutout
+            editor.applyResolvedViewSettings()
+            editor.prefsVersion++
+            editor.state.invalidateAllCaches()
+            editor.refreshView()
+            editor.view.requestRender()
+        }
+        applyRestored(this)
+        secondary?.let(::applyRestored)
         settingsRepo.save(settings)
         browseCache.clear()
         rootNameCache.clear()
@@ -3586,6 +3706,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
             startPdfRefine() // a filter change can newly require the image-box sweep
         }
         view.scrollbarEnabled = new.scrollbar
+        if (questionSession != null) focusCurrentQuestion()
         view.requestRender()
     }
 
@@ -3922,17 +4043,12 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     // --- tools & colour ---
 
     fun selectTool(t: Tool) {
-        questionSession?.tools?.let { it.select(t); return }
         sharedToolState.select(t)
         controller.setTool(t)
     }
 
     /** Run the action a two/three-finger tap or stylus double-tap is mapped to; "none" does nothing. */
     private fun dispatchTapGesture(action: String) {
-        if (questionSession != null) {
-            questionSession?.tools?.active?.gesture(action)
-            return
-        }
         when (action) {
         "undo" -> undo()
         "redo" -> redo()
@@ -3955,7 +4071,6 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     }
 
     fun pickColor(index: Int) {
-        questionSession?.tools?.let { it.pickColor(index); return }
         activeColorIndex = index
         // pickInk also recolours the active text box (editing or selected), so the 5 toolbar
         // swatches double as the text colour control.
@@ -4002,7 +4117,6 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     // --- history ---
 
     fun undo() {
-        questionSession?.let { it.tools?.active?.undo(); return }
         flowText.flushBurst() // the open typing burst is the first thing Ctrl+Z takes back
         val command = history.nextUndo
         val pagesBefore = state.document.pages.size
@@ -4015,7 +4129,6 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     }
 
     fun redo() {
-        questionSession?.let { it.tools?.active?.redo(); return }
         flowText.flushBurst()
         val command = history.nextRedo
         val pagesBefore = state.document.pages.size
@@ -4362,9 +4475,11 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
 
     fun handleKeyDown(e: android.view.KeyEvent): Boolean {
         if (questionDetectionOpen) return false
-        if (questionSession != null) return questionSession?.tools?.active?.handleKey(e) ?: false
         // A canvas is on top: it owns the keyboard, and understands only its own shortcuts.
-        if (canvasOpen) return infinite.handleKeyDown(e)
+        if (isQuestionPeek) return false
+        if (questionSession?.busy == true) return true
+        if (questionSession?.peek == QuestionPeek.FADED) return true
+        if (canvasOpen || questionSession?.peek == QuestionPeek.FOCUSED) return infinite.handleKeyDown(e)
         // A live flow caret session owns the keyboard first (Ctrl+B means bold here).
         if (flowText.active && handleFlowKey(e)) return true
         // While editing a text box, let the field consume keys (only Escape commits).
@@ -4841,7 +4956,6 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         if (questionDetectionOpen) return false
         if (e.keyCode == penDoubleTapKeycode) return onPenDoubleTapKey(e)
         if (e.keyCode in penButtonTapKeycodes) return onPenButtonTapKey(e)
-        if (questionSession != null) return questionSession?.tools?.active?.stylusButton(e) ?: false
         val down = when (e.action) {
             android.view.KeyEvent.ACTION_DOWN -> true
             android.view.KeyEvent.ACTION_UP -> false
@@ -4849,7 +4963,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         }
         // A canvas is on top: the same key stream drives its pen, so a Bluetooth or USI side
         // button behaves there exactly as it does on a note.
-        if (canvasOpen) return infinite.onStylusButtonKey(e.keyCode, down)
+        if (canvasOpen || questionSession?.peek == QuestionPeek.FOCUSED) return infinite.onStylusButtonKey(e.keyCode, down)
         return controller.onStylusButtonKey(e.keyCode, down)
     }
 

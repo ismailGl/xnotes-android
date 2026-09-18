@@ -56,6 +56,7 @@ fun InfiniteToolbar(
     onOpenBackstage: () -> Unit,
     onInsertImage: () -> Unit = {},
     onClosePane: (() -> Unit)? = null,
+    onToggleFullscreen: () -> Unit = {},
 ) {
     val palette = LocalPalette.current
     // The stroke tools use the same designed drawables the paged toolbar does, so a pen looks like
@@ -101,6 +102,7 @@ fun InfiniteToolbar(
                     when (val item = entry.item) {
                         ToolbarItem.HOME -> ToolbarIcon(XnotesIcons.prev, "Home") { onOpenBackstage() }
                         ToolbarItem.TITLE -> Label(editor.title, Modifier.padding(end = 4.dp))
+                        ToolbarItem.FULLSCREEN -> ToolbarIcon(XnotesIcons.fullscreen, "Fullscreen") { onToggleFullscreen() }
 
                         in CANVAS_TOOL_OF -> {
                             val tool = CANVAS_TOOL_OF.getValue(item)

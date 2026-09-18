@@ -317,7 +317,7 @@ class FrontInk(
 
     /** The paper's own pixels, so ink running off the page is cut at the edge as the canvas cuts it. */
     private fun paperClip(rect: Rect): PixelRect {
-        val clipped = state.pageCrop?.let { state.fromPageSpaceRect(0, it) } ?: rect
+        val clipped = state.pageCrop?.let { state.fromPageSpaceRect(state.cropPageIndex, it) } ?: rect
         val topLeft = state.contentToViewport(Pt(clipped.left, clipped.top))
         val bottomRight = state.contentToViewport(Pt(clipped.right, clipped.bottom))
         return PixelRect(

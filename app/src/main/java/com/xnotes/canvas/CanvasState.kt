@@ -590,6 +590,9 @@ class CanvasState(
     var externalOrigin: Pt? = null
     /** Page-space crop for an ink-only view into a shared notebook page. */
     var pageCrop: Rect? = null
+    var cropPageIndex: Int = 0
+    /** View-only page isolation. The complete notebook and its history remain owned by Editor. */
+    var focusedPage: Int? = null
 
     /** Map stable crop-page coordinates through the PDF viewer's uniform transform. */
     fun applyCropViewport(transform: com.xnotes.core.geometry.ZoomPanTransform) {
@@ -606,6 +609,7 @@ class CanvasState(
 
     fun origin(): Pt {
         externalOrigin?.let { return it }
+        if (focusedPage != null) return Pt(-scrollX - flipOffsetX, -scrollY - overscrollY)
         val cw = contentW * zoom
         val ch = contentH * zoom
         // Paginated: the row clamp centres the row when it fits, so the scroll always wins; the
@@ -632,6 +636,19 @@ class CanvasState(
     fun maxScrollY(): Double = max(0.0, ceil(contentH * zoom - viewportH))
 
     fun clampScroll() {
+        focusedPage?.let { index ->
+            val bounds = pageCrop?.let { fromPageSpaceRect(index, it) } ?: pageRects.getOrNull(index)
+            if (bounds != null) {
+                fun clamp(value: Double, start: Double, end: Double, viewport: Int): Double {
+                    val low = start * zoom - 20.0
+                    val high = end * zoom - viewport + 20.0
+                    return if (high < low) (low + high) / 2 else value.coerceIn(low, high)
+                }
+                scrollX = clamp(scrollX, bounds.left, bounds.right, viewportW)
+                scrollY = clamp(scrollY, bounds.top, bounds.bottom, viewportH)
+                return
+            }
+        }
         if (!verticalScroll && pageRects.isNotEmpty()) {
             // Paginated: the scroll window is the current row's span (plus the side margins);
             // a row narrower/shorter than the viewport pins centred/top instead of drifting.
@@ -685,6 +702,7 @@ class CanvasState(
      * reveals empty background, never the neighbour.
      */
     fun drawablePageRange(): IntRange {
+        focusedPage?.let { return it..it }
         val last = document.pages.lastIndex
         if (verticalScroll) return 0..last
         val rows = rowRanges()
@@ -695,7 +713,7 @@ class CanvasState(
     /** Index of the page whose rect contains a content-space point, or null. Hidden paginated
      *  neighbours never hit, so ink/erases/taps can't land on a page that isn't shown. */
     fun pageIndexAtContent(p: Pt): Int? {
-        pageCrop?.let { if (!it.contains(toPageSpace(0, p))) return null }
+        pageCrop?.let { if (!it.contains(toPageSpace(cropPageIndex, p))) return null }
         val drawable = drawablePageRange()
         for (i in pageRects.indices) if (i in drawable && pageRects[i].contains(p)) return i
         return null
@@ -704,6 +722,7 @@ class CanvasState(
     /** The current page (spec 05 §4): contains the viewport vertical centre, biased by half a gap.
      *  Paginated mode reads it from [currentRow] instead (the page under the viewport centre). */
     fun currentPageIndex(): Int {
+        focusedPage?.let { return it }
         if (pageRects.isEmpty()) return 0
         if (!verticalScroll) {
             val rows = rowRanges()
@@ -741,7 +760,7 @@ class CanvasState(
 
     fun goToPage(index: Int) {
         if (pageRects.isEmpty()) return
-        val i = index.coerceIn(0, pageRects.size - 1)
+        val i = (focusedPage ?: index).coerceIn(0, pageRects.size - 1)
         if (!verticalScroll) {
             // Paginated: jump the scroll window to the page's row and land at its top.
             currentRow = rowIndexOf(i)
@@ -804,7 +823,26 @@ class CanvasState(
         clampScroll()
     }
 
+    private fun fitCrop(mode: String): Boolean {
+        val crop = pageCrop ?: return false
+        if (focusedPage == null) return false
+        if (zoomLocked) return true
+        if (viewportW == 0 || viewportH == 0) return true
+        val rect = fromPageSpaceRect(cropPageIndex, crop)
+        val widthZoom = (viewportW - 40.0) / rect.w
+        val heightZoom = (viewportH - 40.0) / rect.h
+        zoom = (when (mode) { "width" -> widthZoom; "height" -> heightZoom; else -> min(widthZoom, heightZoom) }).coerceIn(minZoom, maxZoom)
+        fitWidthActive = false
+        fitHeightActive = false
+        scrollX = rect.centerX * zoom - viewportW / 2.0
+        scrollY = rect.centerY * zoom - viewportH / 2.0
+        invalidateCachesForZoom()
+        clampScroll()
+        return true
+    }
+
     fun fitWidth() {
+        if (fitCrop("width")) return
         if (zoomLocked || contentW <= 0.0 || viewportW == 0) return
         val cur = currentPageIndex()
         zoom = fitWidthZoom()
@@ -815,6 +853,7 @@ class CanvasState(
     }
 
     fun fitHeight() {
+        if (fitCrop("height")) return
         val pages = document.pages
         if (zoomLocked || pages.isEmpty() || viewportH == 0) return
         val cur = currentPageIndex()
@@ -826,6 +865,7 @@ class CanvasState(
     }
 
     fun fitPage() {
+        if (fitCrop("page")) return
         val pages = document.pages
         if (zoomLocked || pages.isEmpty() || viewportW == 0 || viewportH == 0) return
         val cur = currentPageIndex()

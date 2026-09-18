@@ -10,6 +10,11 @@ package com.xnotes.core.tools
  *  cluster but move and hide as one unit. [id] is the persistence key (never rename without a
  *  migration); the tool ids match the matching [Tool.id]. */
 enum class ToolbarItem(val id: String, val label: String) {
+    QUESTION_NAV("question_nav", "Question navigation / progress"),
+    QUESTION_ANSWER("question_answer", "Question answer controls"),
+    QUESTION_PEEK("question_peek", "Question page peek"),
+    QUESTION_CROP("question_crop", "Edit question crop"),
+    QUESTION_DELETE("question_delete", "Delete question"),
     HOME("home", "Home"),
     TITLE("title", "Title"),
     SIDEBAR("sidebar", "Sidebar"),
@@ -145,6 +150,11 @@ data class ToolbarLayout(val sections: List<ToolbarSection>) {
     companion object {
         /** Later-added items that belong beside an existing one in stored layouts. */
         private val INSERT_AFTER = mapOf(
+            ToolbarItem.QUESTION_NAV to ToolbarItem.TITLE,
+            ToolbarItem.QUESTION_ANSWER to ToolbarItem.QUESTION_NAV,
+            ToolbarItem.QUESTION_PEEK to ToolbarItem.QUESTION_ANSWER,
+            ToolbarItem.QUESTION_CROP to ToolbarItem.QUESTION_PEEK,
+            ToolbarItem.QUESTION_DELETE to ToolbarItem.QUESTION_CROP,
             ToolbarItem.TEXT_BOX to ToolbarItem.TEXT,
             ToolbarItem.VIEW to ToolbarItem.STYLES,
             ToolbarItem.MARGINS to ToolbarItem.STYLES,
@@ -164,7 +174,7 @@ data class ToolbarLayout(val sections: List<ToolbarSection>) {
             ToolbarItem.PAN, ToolbarItem.SELECT, ToolbarItem.LASSO, ToolbarItem.WAND,
             ToolbarItem.SHAPE,
             ToolbarItem.IMAGE, ToolbarItem.COLORS, ToolbarItem.UNDO, ToolbarItem.REDO,
-            ToolbarItem.STYLES, ToolbarItem.WAYPOINTS, ToolbarItem.MINIMAP,
+            ToolbarItem.STYLES, ToolbarItem.WAYPOINTS, ToolbarItem.MINIMAP, ToolbarItem.FULLSCREEN,
             ToolbarItem.ZOOM, ToolbarItem.FIT, ToolbarItem.ZOOM_LOCK,
         )
 
@@ -174,6 +184,7 @@ data class ToolbarLayout(val sections: List<ToolbarSection>) {
 
         /** Mirrors the hardcoded bar exactly (see Toolbar.kt) so existing users see no change. */
         val DEFAULT: ToolbarLayout = of(
+            listOf(ToolbarItem.QUESTION_NAV, ToolbarItem.QUESTION_ANSWER, ToolbarItem.QUESTION_PEEK, ToolbarItem.QUESTION_CROP, ToolbarItem.QUESTION_DELETE),
             listOf(ToolbarItem.HOME, ToolbarItem.TITLE),
             listOf(ToolbarItem.SIDEBAR),
             listOf(
@@ -203,7 +214,7 @@ data class ToolbarLayout(val sections: List<ToolbarSection>) {
             listOf(ToolbarItem.COLORS),
             listOf(ToolbarItem.UNDO, ToolbarItem.REDO),
             listOf(ToolbarItem.STYLES, ToolbarItem.WAYPOINTS, ToolbarItem.MINIMAP),
-            listOf(ToolbarItem.ZOOM, ToolbarItem.FIT, ToolbarItem.ZOOM_LOCK),
+            listOf(ToolbarItem.ZOOM, ToolbarItem.FIT, ToolbarItem.ZOOM_LOCK, ToolbarItem.FULLSCREEN),
         )
 
         private fun of(vararg groups: List<ToolbarItem>): ToolbarLayout =

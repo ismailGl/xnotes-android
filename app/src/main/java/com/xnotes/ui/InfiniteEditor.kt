@@ -66,7 +66,12 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
     var document: InfiniteDocument = InfiniteDocument()
         private set
 
-    val history = History()
+    var history = History()
+        private set
+
+    private var referenceItems: List<ImageItem> = emptyList()
+    var inputEnabled = true
+    private var lastInput: android.view.MotionEvent? = null
 
     val view = InfiniteCanvasView(appContext)
 
@@ -233,7 +238,7 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
         override fun onOrderChanged() {
             // Once per structural edit rather than once per item, so an eraser drag that cuts a
             // dozen strokes publishes one ordering instead of a dozen.
-            scene.setOrder(document.items)
+            scene.setOrder(referenceItems + document.items)
             view.publish()
         }
 
@@ -249,7 +254,13 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
     }
 
     init {
-        view.input = { interaction.onTouch(it) }
+        view.input = {
+            if (inputEnabled) {
+                lastInput?.recycle()
+                lastInput = android.view.MotionEvent.obtain(it)
+                interaction.onTouch(it)
+            } else true
+        }
         view.genericMotion = { interaction.onGenericMotion(it) }
         view.afterLayout = { applyInitialView() }
         view.onContextReady = { renderFailure = view.failure }
@@ -353,8 +364,8 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
     private fun rebuildScene() {
         scene.reset()
         vectorMeshGen.clear()
-        for (item in document.items) pushItem(item)
-        scene.setOrder(document.items)
+        for (item in referenceItems + document.items) pushItem(item)
+        scene.setOrder(referenceItems + document.items)
     }
 
     /** Repaint the canvas with whatever the model currently says. */
@@ -1392,20 +1403,50 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
         view.accent = palette.accent
     }
 
+    /** Host-owned reference content uses the normal image renderer but is never editable ink. */
+    fun setReferenceItems(items: List<ImageItem>) {
+        referenceItems.forEach { scene.remove(it) }
+        referenceItems = items
+        items.forEach(::pushItem)
+        scene.setOrder(referenceItems + document.items)
+        view.contentBounds = contentBounds()
+        view.publish()
+    }
+
+    private fun contentBounds(): Rect? = (referenceItems.map { it.bounds() } + listOfNotNull(document.contentBounds()))
+        .reduceOrNull { a, b -> a.union(b) }
+
+    fun finishInput() {
+        lastInput?.let { event ->
+            if (event.actionMasked != android.view.MotionEvent.ACTION_UP && event.actionMasked != android.view.MotionEvent.ACTION_CANCEL) {
+                val up = android.view.MotionEvent.obtain(event)
+                up.action = android.view.MotionEvent.ACTION_UP
+                interaction.onTouch(up)
+                up.recycle()
+            }
+            event.recycle()
+        }
+        lastInput = null
+        interaction.resetGestureState()
+        endFrontInk()
+        settleHeld()
+    }
+
     // --- documents ---
 
     fun newCanvas() {
         replaceDocument(InfiniteDocument())
     }
 
-    fun replaceDocument(next: InfiniteDocument) {
+    fun replaceDocument(next: InfiniteDocument, retainedHistory: History = History()) {
+        finishInput()
         clearFading() // whatever was melting belongs to the outgoing canvas
         document.listener = null
         document = next
         next.listener = modelListener
         selection = CanvasSelection(next)
         hasSelection = false
-        history.clear()
+        history = retainedHistory
         interaction.resetGestureState()
         view.background = next.background
         view.paperColor = next.background.paperColor ?: view.paperColor
@@ -1431,7 +1472,7 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
         val saved = document.lastView
         when {
             saved != null -> viewport.apply(saved)
-            else -> document.contentBounds()?.let { viewport.fit(it) } ?: viewport.centerOn(0.0, 0.0)
+            else -> contentBounds()?.let { viewport.fit(it) } ?: viewport.centerOn(0.0, 0.0)
         }
         onViewChanged()
         view.publish()
@@ -1440,7 +1481,7 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
     /** Frame every item on the canvas. */
     fun zoomToFit() {
         if (zoomLocked) return
-        val bounds = document.contentBounds()
+        val bounds = contentBounds()
         if (bounds == null) {
             viewport.zoom = 1.0
             viewport.centerOn(0.0, 0.0)
@@ -1478,7 +1519,7 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
         if (!minimapVisible) return false
         val panel = Minimap.panel(viewport.widthPx, viewport.heightPx)
         if (!panel.contains(Pt(vx, vy))) return false
-        val extent = Minimap.mappedExtent(document.contentBounds(), viewport.visibleContentRect())
+        val extent = Minimap.mappedExtent(contentBounds(), viewport.visibleContentRect())
         val target = Minimap.toContent(Pt(vx, vy), extent, panel)
         viewport.centerOn(target.x, target.y)
         onViewChanged()
@@ -1499,6 +1540,7 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
     // upright and leaves the box turned over it. The paged editor drops the selection for the same
     // reason, so both surfaces behave alike.
     fun undo() {
+        if (!inputEnabled) return
         history.undo()
         interaction.clearSelection()
         markDirty()
@@ -1507,6 +1549,7 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
     }
 
     fun redo() {
+        if (!inputEnabled) return
         history.redo()
         interaction.clearSelection()
         markDirty()
@@ -1520,7 +1563,7 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
         // The menu is anchored in viewport pixels, so a pan or a zoom moves it.
         refreshSelectionMenu()
         // The minimap maps everything drawn, so its extent moves with the content, not the view.
-        view.contentBounds = document.contentBounds()
+        view.contentBounds = contentBounds()
     }
 
     private fun refresh() {
@@ -1528,7 +1571,7 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
         canUndo = history.canUndo
         canRedo = history.canRedo
         waypoints = document.waypoints.toList()
-        view.contentBounds = document.contentBounds()
+        view.contentBounds = contentBounds()
     }
 
     companion object {

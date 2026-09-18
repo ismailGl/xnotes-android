@@ -429,6 +429,11 @@ private fun SectionCaret() {
 
 @Composable
 private fun itemIcon(item: ToolbarItem): ImageVector = when (item) {
+    ToolbarItem.QUESTION_NAV -> XnotesIcons.prev
+    ToolbarItem.QUESTION_ANSWER -> XnotesIcons.more
+    ToolbarItem.QUESTION_PEEK -> XnotesIcons.view
+    ToolbarItem.QUESTION_CROP -> XnotesIcons.scissors
+    ToolbarItem.QUESTION_DELETE -> XnotesIcons.scissors
     ToolbarItem.HOME -> XnotesIcons.home
     ToolbarItem.TITLE -> XnotesIcons.edit
     ToolbarItem.SIDEBAR -> XnotesIcons.sidebar

@@ -45,7 +45,7 @@ fun QuestionDetectionScreen(editor: Editor) {
     val aiConfig = remember { GeminiVerifierConfig(com.xnotes.BuildConfig.GEMINI_API_KEY, com.xnotes.BuildConfig.GEMINI_MODEL) }
     val aiRenderer = remember { VerifierPageRenderer(context.applicationContext, sourceFile) }
     val session = remember { QuestionDetectionSession(sourceFile, sourceUri, doc.title, pages,
-        QuestionSetRepository(File(context.filesDir, "questions")), scope,
+        editor.questionRepository(), scope,
         { editor.state.document === doc && doc.pdfFile == sourceFile && doc.path == sourceUri &&
             doc.pages.mapNotNull { it.pdfPage }.groupingBy { it }.eachCount().filterValues { it == 1 }.keys.sorted() == pages },
         { PdfTextExtractor(context, sourceFile) },
@@ -156,8 +156,17 @@ private data class DetectionFrame(val plan: QuestionRenderPlan, val bitmap: Bitm
 @Composable
 private fun DetectionPreview(session: QuestionDetectionSession, page: Int, selected: String?, edit: Boolean, add: Boolean,
                              select: (String?) -> Unit, added: (String?) -> Unit) {
+    PdfCropReview(session.pdf, session.proposals, page, selected, edit, add, select,
+        { id, crop -> session.edit(id, crop) }, { crop -> added(session.add(page, crop)) })
+}
+
+/** Shared rectangle review surface for detection and corrections of saved questions. */
+@Composable
+internal fun PdfCropReview(pdf: File, proposals: List<DetectedQuestion>, page: Int, selected: String?,
+    edit: Boolean, add: Boolean = false, select: (String?) -> Unit = {},
+    edited: (String, NormalizedRect) -> Unit, added: (NormalizedRect) -> Unit = {}) {
     val context = LocalContext.current
-    val renderer = remember { QuestionPdfRenderer(context, session.pdf) }
+    val renderer = remember(pdf, page) { QuestionPdfRenderer(context, pdf) }
     val question = remember(page) { Question("preview", page, NormalizedRect(0.0, 0.0, 1.0, 1.0)) }
     var dimensions by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -188,9 +197,11 @@ private fun DetectionPreview(session: QuestionDetectionSession, page: Int, selec
                 catch (_: Exception) { error = "Could not render preview; pan or zoom to retry" }
             }
             val latestSelected by rememberUpdatedState(selected)
+            val latestProposals by rememberUpdatedState(proposals)
+            val latestEdited by rememberUpdatedState(edited)
             fun point(at: Offset) = Pt(((at.x - transform.left) / transform.scale / size.first).coerceIn(0.0, 1.0),
                 ((at.y - transform.top) / transform.scale / size.second).coerceIn(0.0, 1.0))
-            fun hit(at: Pt) = session.proposals.lastOrNull { it.sourcePageIndex == page && at.x in it.crop.left..it.crop.right && at.y in it.crop.top..it.crop.bottom }
+            fun hit(at: Pt) = latestProposals.lastOrNull { it.sourcePageIndex == page && at.x in it.crop.left..it.crop.right && at.y in it.crop.top..it.crop.bottom }
             Canvas(Modifier.fillMaxSize().clipToBounds()
                 .pointerInput(edit, add) {
                     detectTapGestures(onDoubleTap = { transform = transform.reset() }, onTap = { select(hit(point(it))?.id) })
@@ -200,7 +211,7 @@ private fun DetectionPreview(session: QuestionDetectionSession, page: Int, selec
                         var start = Pt(0.0, 0.0); var original: NormalizedRect? = null; var id: String? = null; var corner = -1
                         detectDragGestures(onDragStart = { offset ->
                             start = point(offset)
-                            val current = session.proposals.firstOrNull { it.id == latestSelected &&
+                            val current = latestProposals.firstOrNull { it.id == latestSelected &&
                                 start.x >= it.crop.left - 32/(size.first*transform.scale) && start.x <= it.crop.right + 32/(size.first*transform.scale) &&
                                 start.y >= it.crop.top - 32/(size.second*transform.scale) && start.y <= it.crop.bottom + 32/(size.second*transform.scale) } ?: hit(start)
                             id = if (add) null else current?.id; original = if (add) null else current?.crop
@@ -209,7 +220,7 @@ private fun DetectionPreview(session: QuestionDetectionSession, page: Int, selec
                                 abs(it.x-start.x)*size.first*transform.scale < 32 && abs(it.y-start.y)*size.second*transform.scale < 32
                             } } ?: -1
                         }, onDragCancel = { draft = null }, onDragEnd = {
-                            draft?.let { r -> if (add) added(session.add(page, r)) else id?.let { session.edit(it, r) } }; draft = null
+                            draft?.let { r -> if (add) added(r) else id?.let { latestEdited(it, r) } }; draft = null
                         }) { change, _ ->
                             change.consume(); val at = point(change.position); val r = original
                             draft = if (add) ProposalGeometry.between(start.x,start.y,at.x,at.y)
@@ -225,7 +236,7 @@ private fun DetectionPreview(session: QuestionDetectionSession, page: Int, selec
                         (transform.top+r.top*transform.scale).toFloat(),(transform.left+r.right*transform.scale).toFloat(),
                         (transform.top+r.bottom*transform.scale).toFloat()),paint)
                 } }
-                val items=session.proposals.filter { it.sourcePageIndex == page }
+                val items=proposals.filter { it.sourcePageIndex == page }
                 (items.map { it.crop to it } + listOfNotNull(draft?.let { it to null })).forEach { (r,p) ->
                     val x=(transform.left+r.left*size.first*transform.scale).toFloat(); val y=(transform.top+r.top*size.second*transform.scale).toFloat()
                     val rw=((r.right-r.left)*size.first*transform.scale).toFloat(); val rh=((r.bottom-r.top)*size.second*transform.scale).toFloat()
