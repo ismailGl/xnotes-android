@@ -8,6 +8,27 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class QuestionSessionTest {
+    @Test fun directChoicesPersistAndPeekReturnsToSameQuestion() = kotlinx.coroutines.runBlocking {
+        val scope = kotlinx.coroutines.CoroutineScope(coroutineContext + kotlinx.coroutines.SupervisorJob())
+        var saved = com.xnotes.platform.QuestionProgress()
+        val store = object : com.xnotes.platform.QuestionProgressStore {
+            override suspend fun load() = saved
+            override suspend fun save(progress: com.xnotes.platform.QuestionProgress) { saved=progress }
+        }
+        val q = QuestionSetRepository.Entry(Question("a",0,NormalizedRect(0.0,0.0,1.0,1.0)))
+        val set = QuestionSetRepository.LoadedSet("set","Title",listOf(q))
+        val session = QuestionSession(set,File("source.pdf"),scope=scope,progressStore=store)
+        session.setAnswerOptions(com.xnotes.platform.QuestionAnswerOptions(optionCount=3))
+        assertEquals(listOf("A","B","C"),session.answerOptions.choices)
+        session.selectChoice("B")
+        kotlinx.coroutines.yield()
+        assertEquals("B",session.selectedChoice)
+        session.cyclePeek(); session.cyclePeek()
+        assertEquals(q,session.current)
+        assertEquals(QuestionPeek.FOCUSED,session.peek)
+        assertEquals("B",QuestionSession(set,File("source.pdf"),initialProgress=saved).selectedChoice)
+        scope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+    }
     @Test fun navigationIsBoundedAndCanPassInvalidEntries() {
         val good = QuestionSetRepository.Entry(Question("a", 0, NormalizedRect(0.0, 0.0, 1.0, 1.0)))
         val bad = QuestionSetRepository.Entry(null, "Invalid crop")

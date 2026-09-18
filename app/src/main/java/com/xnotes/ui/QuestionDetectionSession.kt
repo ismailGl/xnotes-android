@@ -35,6 +35,7 @@ class QuestionDetectionSession(
     var aiStatuses by mutableStateOf<Map<Int, String>>(emptyMap()); private set
     var aiDiagnostics by mutableStateOf<Map<Int, String>>(emptyMap()); private set
     private var originalProposals = emptyMap<Int, List<DetectedQuestion>>()
+    private val explicitlyRejected = mutableSetOf<String>()
     private val manuallyTouched = mutableSetOf<Int>()
     private var reviewPage: Int? = null
     private var verification: VerificationQueue? = null
@@ -89,7 +90,7 @@ class QuestionDetectionSession(
         val targets = requested.distinct().sorted()
         if (targets.isEmpty() || targets.any { it !in availablePages }) { status = "Choose PDF-backed pages from this notebook"; return }
         verification?.close(); verification = null
-        manuallyTouched.clear(); originalProposals = emptyMap(); aiStatuses = emptyMap(); aiDiagnostics = emptyMap()
+        explicitlyRejected.clear(); manuallyTouched.clear(); originalProposals = emptyMap(); aiStatuses = emptyMap(); aiDiagnostics = emptyMap()
         pageDiagnostics = emptyMap()
         pageSources = emptyMap()
         busy = true; proposals = emptyList(); pages = targets; errors = emptyList(); sourceId = null
@@ -146,18 +147,19 @@ class QuestionDetectionSession(
     fun accept(id: String, value: Boolean) {
         if (!busy && !saving) {
             proposals.firstOrNull { it.id == id }?.let { protect(it.sourcePageIndex) }
+            if (value) explicitlyRejected.remove(id) else explicitlyRejected.add(id)
             proposals = proposals.map { if (it.id == id) it.copy(accepted = value) else it }
         }
     }
     fun acceptAll() { if (!busy && !saving) {
         pages.forEach { protect(it) }
-        proposals = proposals.map { it.copy(accepted = !duplicate(it.sourcePageIndex, it.crop)) }
+        proposals = proposals.map { if (it.accepted || it.id in explicitlyRejected) it else it.copy(accepted = !duplicate(it.sourcePageIndex, it.crop)) }
     } }
     fun add(page: Int, crop: NormalizedRect): String? {
         if (busy || saving || page !in pages) return null
         protect(page)
         val id = UUID.randomUUID().toString()
-        proposals = proposals + DetectedQuestion(id, page, crop, listOf("Manual rectangle; review before accepting"))
+        proposals = proposals + DetectedQuestion(id, page, crop, listOf("Manual rectangle"), accepted = true)
         return id
     }
     fun commit(onSaved: (String) -> Unit) {

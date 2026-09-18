@@ -64,3 +64,50 @@ Two explicit live diagnostics using a synthetic PNG and the unchanged production
 ### Debug response diagnostics
 
 Failures now identify page render/load, network/provider, response parsing, or response validation. In debug builds, parsing/validation failures offer a selectable **Show AI response diagnostic** panel. It includes returned text and candidate finish reason, capped at 12,000 characters plus a truncation notice. Credentials, image payloads, and request-shaped echoes are redacted; diagnostics are not persisted or logged. Release builds do not retain/display response diagnostics. The current schema-free request format and local crop validation rules are unchanged.
+
+### Review behavior and live schema probe (2026-09-18)
+
+Accept All affects pending proposals only; explicit rejections survive repeated Accept All. Manual Add rectangle starts accepted; AI ADD remains review-required.
+
+Debug diagnostics now include finish reason, text presence, sanitized response text and the exact local rejection check. Validation predicates remain unchanged.
+
+Live probes used gemini-3.5-flash-lite, APPLICATION_JSON, the unchanged application prompt, and the synthetic gemini-diagnostic.png question fixture (not a failing workbook page):
+
+1. No schema: HTTP 200, STOP, operations KEEP p1; local validation passed. The reported workbook failure was not reproduced.
+2. Schema {"type":"object"}: HTTP 200; returned {}; rejected locally because operations is missing.
+3. Required operations array with object items: HTTP 200; returned an empty operation object; rejected because action is missing.
+4. Operation fields, action enum and required action: HTTP 200; KEEP p1 passed.
+5. additionalProperties:false on root and operation: HTTP 200; KEEP p1 passed.
+6. Add maxItems:256 to operations: HTTP 400, code=400, status=INVALID_ARGUMENT, message="Request contains an invalid argument."
+
+Stopped at the first provider error. This isolates maxItems:256 as the failing addition in this probe, not proof that all maxItems values are unsupported. Production request remains schema-free; the strict local 256-operation limit remains enforced. No validation or crop rule was relaxed. The failing workbook response is still needed to diagnose that specific failure; the debug UI now exposes it safely.
+
+### Canonical protocol and scratch workspace follow-up
+
+The application now sends the accepted operations-object schema (without maxItems), explicitly requires action rather than type, and illustrates full-page normalization on both axes. The strict local validator rejects all coordinates outside [0,1], including mixed pixel/normalized input. Only explicit debug diagnostic migration can normalize a top-level array/type container; the application parser remains canonical and strict.
+
+Question Mode disables the source notebook controller and no longer invokes its writer during question transitions. QuestionScratchStore writes only per-question ink.xcanvas through the selected-folder QuestionFiles boundary. Existing infinite editor, history and PDF reference placement remain in use. Page Peek remains read-only and returning requests a frame without refitting. Asynchronous image decode completion now schedules a render, eliminating reliance on pan/zoom to upload a crop texture. Direct bottom-bar choice chips follow configured options and highlight saved selection; settings remain separate.
+
+Unit regressions cover independent scratch ink/view persistence, answer selection/peek, asynchronous render wakeup, canonical/debug-migration containers, mixed-unit rejection and normalized ADD. GPU presentation and real-device pointer interaction still require on-device verification; the render regression exercises scheduling, not a real GL surface.
+
+
+### Linked crop projection and patch protocol (2026-09-18)
+
+This supersedes the preceding operations-object/debug-array migration notes. The only wire format is `{"delete":[],"adjust":[{"id":"existing-id","box":[left,top,right,bottom]}],"add":[[left,top,right,bottom]]}`. Omitted IDs are kept. The schema requires all three arrays and exactly four numeric box entries (`minItems:4`, `maxItems:4`). Local validation remains atomic and rejects unknown/conflicting IDs, malformed boxes, mixed units, tiny/inverted rectangles and unexpected fields. AI additions still require review.
+
+One live request to gemini-3.5-flash-lite with the production builder and synthetic fixture returned HTTP 200, finishReason STOP, text present, and:
+
+```json
+{"delete":[],"adjust":[{"id":"p1","box":[0.09,0.09,0.44,0.44]}],"add":[]}
+```
+
+Strict local validation passed. No automatic acceptance occurred. No further live probes were made.
+
+Scratch remains the editing authority. Each source page stores a locked derived `question_projection` group keyed by question set and question ID. Scratch changes replace that group with transformed stroke/shape copies and a renderer clip at the source crop, preserving the complete scratch stroke outside the crop. Replacement handles erase/history/reopen without accumulating source copies. Notebook serialization and PDF export preserve the clip; Page Peek uses the source projection rather than the entire scratch canvas. Notebook saves use the existing conflict-checked writer. New scratch migration no longer imports unrelated source ink, preventing feedback duplication; existing saved scratch content is retained.
+
+Regression coverage includes inside/outside/crossing strokes, translated/scaled/quarter-turned coordinate mapping independent of viewport, owner replacement after erase/restore, notebook codec round-trip, canonical patch parsing and atomic invalid-entry rejection. On-device visual interaction remains to be checked.
+
+
+### Independent segmentation and source-ink display follow-up
+
+The prior delete/adjust/add wire protocol is superseded by the integer-grid questions list. Source notebook ink is displayed as a clipped read-only crop layer, excluding the active scratch projection. See [biology segmentation validation](biology-segmentation-validation.md) for implementation, real-page boundary comparisons and the remaining model-quality failures.

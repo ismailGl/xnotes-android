@@ -15,6 +15,7 @@ import com.xnotes.core.model.PageMargins
 import com.xnotes.core.model.PageStyle
 import com.xnotes.core.model.Rgba
 import com.xnotes.core.model.ShapeItem
+import com.xnotes.core.model.QuestionInkProjection
 import com.xnotes.core.model.Stroke
 import com.xnotes.core.model.TextItem
 import com.xnotes.core.pal.FontFace
@@ -250,6 +251,7 @@ class DocumentCodec(
         j.name("items").beginArray()
         for (item in page.items) {
             when (item) {
+                is QuestionInkProjection -> writeProjection(j, item)
                 is Stroke -> writeStroke(j, item)
                 is ImageItem -> {
                     // The name was decided by [imageAssets]' walk of these same items; taking it
@@ -266,6 +268,19 @@ class DocumentCodec(
         writeStyle(j, page.style)
         writeMargins(j, page.margins)
         j.endObject()
+    }
+
+    private fun writeProjection(j: JsonWrite, projection: QuestionInkProjection) {
+        j.beginObject()
+        j.name("kind").value("question_projection")
+        j.name("owner").value(projection.owner)
+        j.name("rect").beginArray().value(projection.clip.x).value(projection.clip.y).value(projection.clip.w).value(projection.clip.h).endArray()
+        j.name("projection_ink").beginArray()
+        projection.ink.forEach { when(it) {
+            is Stroke -> writeStroke(j,it)
+            is ShapeItem -> writeShape(j,it)
+        } }
+        j.endArray(); j.endObject()
     }
 
     private fun writeStroke(j: JsonWrite, s: Stroke) {
@@ -658,6 +673,8 @@ class DocumentCodec(
     /** Union of every kind's fields, so an item parses in one pass whatever its key order. */
     private class ItemScratch {
         var locked = false
+        var owner: String? = null
+        val projectionInk = mutableListOf<CanvasItem>()
         var kind: String? = null
         var tool: String? = null
         var config: ConfigScratch? = null
@@ -717,6 +734,14 @@ class DocumentCodec(
         p.beginObject()
         while (p.hasNext()) {
             when (p.nextName()) {
+                "owner" -> s.owner = stringOr(p, "")
+                "projection_ink" -> {
+                    if (p.peek() == JsonPull.Token.BEGIN_ARRAY) {
+                        p.beginArray()
+                        while(p.hasNext()) parseItem(p,s.projectionInk,mutableListOf())
+                        p.endArray()
+                    } else p.skipValue()
+                }
                 "kind" -> s.kind = stringOr(p, "")
                 "tool" -> s.tool = stringOr(p, "")
                 "config" -> s.config = parseConfig(p)
@@ -756,6 +781,9 @@ class DocumentCodec(
         p.endObject()
         val before = items.size
         when (s.kind) {
+            "question_projection" -> if (!s.owner.isNullOrBlank() && s.rect != null) {
+                items.add(QuestionInkProjection(s.owner!!,s.rect!!,s.projectionInk.filter { it is Stroke || it is ShapeItem }))
+            }
             Stroke.KIND -> items.add(buildStroke(s))
             ImageItem.KIND -> {
                 val asset = s.asset

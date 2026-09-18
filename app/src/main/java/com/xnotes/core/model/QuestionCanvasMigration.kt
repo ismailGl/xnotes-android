@@ -14,9 +14,7 @@ object QuestionCanvasMigration {
         val page = notebook.pages.firstOrNull { it.pdfPage == question.sourcePageIndex }
         val canvas = InfiniteDocument(dpi = notebook.dpi)
         val crop = page?.let { anchor(question, it.width, it.height) }
-        page?.items?.filter { crop != null && it.bounds().intersects(crop) }?.let { items ->
-            canvas.addAll(items.map { it.deepCopy(measurer) })
-        }
+        // Source ink remains owned by the notebook; never import it as new scratch ink.
         // Preserve older separate answer sheets as additional workspace below the question.
         var y = (crop?.bottom ?: 0.0) + 80.0
         legacy?.pages?.forEach { sheet ->

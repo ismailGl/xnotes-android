@@ -9,9 +9,10 @@ internal object GeminiResponseDiagnostic {
         val diagnostic = if (debug) sanitize(extractText(body), apiKey, imageBase64) else null
         try {
             return GeminiVerificationJson.response(body).copy(debugResponse = diagnostic)
-        } catch (_: Exception) {
-            throw VerificationFailure("Could not decode a complete operations response",
-                VerificationStage.PARSING, diagnostic)
+        } catch (e: Exception) {
+            val reason = sanitize(e.message ?: e.javaClass.simpleName, apiKey, imageBase64)
+            throw VerificationFailure("Could not decode a complete questions response",
+                VerificationStage.PARSING, diagnostic?.plus("\nParser rejection: $reason"))
         }
     }
     private fun extractText(body: String): String = try {
@@ -22,6 +23,7 @@ internal object GeminiResponseDiagnostic {
                 val finish = candidate.optString("finishReason").takeIf { it.matches(Regex("[A-Z_]{1,64}")) } ?: "unknown"
                 appendLine("Candidate ${i + 1} · finishReason=$finish")
                 val parts = candidate.optJSONObject("content")?.optJSONArray("parts")
+                appendLine("Text content exists: ${parts != null && (0 until parts.length()).any { parts.getJSONObject(it).opt("text") is String }}")
                 if (parts == null) appendLine("[No response text]") else for (j in 0 until parts.length()) {
                     val part = parts.getJSONObject(j)
                     if (!part.optBoolean("thought", false) && part.opt("text") is String) appendLine(part.getString("text"))

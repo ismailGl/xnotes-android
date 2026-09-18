@@ -66,10 +66,10 @@ class VerificationQueue(
                         status(key.page, "AI ${e.stage.label} failure · " + e.status + " · proposals unchanged")
                         if (debugDiagnostics) diagnostic(key.page, e.debugResponse)
                     }
-                } catch (_: Exception) {
+                } catch (e: Exception) {
                     if (epoch == generation) {
                         status(key.page, "AI ${stage.label} failure · proposals unchanged")
-                        if (debugDiagnostics && stage == VerificationStage.VALIDATION) diagnostic(key.page, responseDiagnostic)
+                        if (debugDiagnostics && stage == VerificationStage.VALIDATION) diagnostic(key.page, responseDiagnostic?.plus("\nValidator rejection: " + (e.message?.takeIf { it.startsWith("Local rule: ") } ?: e.javaClass.simpleName)))
                     }
                 } finally {
                     if (epoch != generation) attempted.remove(key)

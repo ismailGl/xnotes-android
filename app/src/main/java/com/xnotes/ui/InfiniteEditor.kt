@@ -270,7 +270,9 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
         view.scene = scene
         // Decoding reads a file and can take tens of milliseconds, so it never runs on the render
         // thread; the finished bitmap is picked up and uploaded at the start of the next frame.
-        scene.decodeOn = { work -> decodeExecutor.execute(work) }
+        scene.decodeOn = { work -> decodeExecutor.execute {
+            com.xnotes.core.infinite.RenderCompletion.run(work) { view.requestRender() }
+        } }
         document.listener = modelListener
     }
 

@@ -505,14 +505,17 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
                         canvas.applyPalette(palette)
                         canvas.applyInputPrefs(preferences.fingerDraws, controller.penButtonTool, preferences.zoomLockPan)
                         canvas.applyZoomRange(preferences.canvasMinZoomPercent, preferences.canvasMaxZoomPercent)
-                        val workspace = QuestionCanvasWorkspace(viewContext, canvas, doc, set.id, files, imageDir) { message = it }
+                        val workspace = QuestionCanvasWorkspace(viewContext, canvas, doc, set.id, files, imageDir,
+                            onProjectionChanged = { state.refreshAllInk(); refreshContent() },
+                            persistSource = { saveQuestionProjection(doc) }, onError = { message = it })
                         questionWorkspace = workspace
                         val initial = set.entries.firstOrNull { it.question?.id == progress.lastQuestionId } ?: set.entries.firstOrNull()
                         try { workspace.open(initial?.question) }
                         catch (e: Exception) { workspace.close(); questionWorkspace = null; throw e }
+                        controller.readOnly = true
                         questionSession = QuestionSession(set, pdf,
                             progressStore = progressStore, initialProgress = progress,
-                            beforeTransition = { workspace.prepareTransition(); saveQuestionNotebook(doc) },
+                            beforeTransition = { workspace.prepareTransition() },
                             onQuestionChanged = ::focusCurrentQuestion,
                             onNavigate = workspace::open,
                             onInputEnabled = { infinite.inputEnabled = it },
@@ -555,7 +558,10 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
 
     fun focusCurrentQuestion() {
         val session = questionSession ?: return
-        if (session.peek == QuestionPeek.FOCUSED) return // The live xCanvas viewport and History stay intact.
+        if (session.peek == QuestionPeek.FOCUSED) {
+            infinite.requestRender() // Reattach without refitting or replacing the scratch viewport/history.
+            return
+        }
         if (session.loadingView) return
         infinite.finishInput()
         session.loadingView = true
@@ -580,8 +586,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
                 val question = session.current?.question
                 peek.state.document.pages.forEach { page ->
                     page.items.clear()
-                    val items = if (page.pdfPage == question?.sourcePageIndex) infinite.document.items
-                        else state.document.pages.firstOrNull { it.pdfPage == page.pdfPage }?.items.orEmpty()
+                    val items = state.document.pages.firstOrNull { it.pdfPage == page.pdfPage }?.items.orEmpty()
                     page.items.addAll(items.map { it.deepCopy(textMeasurer) })
                 }
                 peek.state.refreshAllInk()
@@ -650,18 +655,18 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         }
     }
 
-    /** Use the normal guarded writer, including its conflict checks, for shared-page ink. */
-    private suspend fun saveQuestionNotebook(doc: Document) {
-        check(state.document === doc) { "The notebook session changed" }
+    /** Save derived projection ink through the normal conflict-checked notebook writer. */
+    private suspend fun saveQuestionProjection(doc: Document) {
+        check(state.document === doc) { "Notebook changed" }
         noteDebounceJob?.cancel()
         noteWriteJob?.join()
-        check(state.document === doc) { "The notebook session changed" }
+        check(state.document === doc) { "Notebook changed" }
         if (!doc.dirty) return
         val uri = autosaveUri ?: doc.path ?: error("Save the notebook first")
         var succeeded = false
         startNoteWrite(uri, doc.snapshot(), doc.title, System.nanoTime(), onResult = { succeeded = it })
         noteWriteJob?.join()
-        check(succeeded) { "Could not save the notebook" }
+        check(succeeded) { "Could not save projected question ink" }
     }
 
     /** Long-press paste context menu target, or null when hidden. */

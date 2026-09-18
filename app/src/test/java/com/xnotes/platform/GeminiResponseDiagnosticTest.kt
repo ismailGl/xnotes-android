@@ -11,6 +11,13 @@ class GeminiResponseDiagnosticTest {
         JSONObject().put("finishReason", "STOP").put("content", JSONObject().put("parts",
             org.json.JSONArray().put(JSONObject().put("text", text)))))).toString()
 
+    @Test fun onlyCanonicalQuestionsAreAccepted() {
+        for(old in listOf("[]","{\"operations\":[]}","{\"delete\":[],\"adjust\":[],\"add\":[]}")) {
+            try { GeminiResponseDiagnostic.parse(envelope(old),true,"",""); fail() } catch (_:VerificationFailure) {}
+        }
+        val result=GeminiResponseDiagnostic.parse(envelope("{\"questions\":[[100,100,400,500]]}"),false,"","")
+        assertEquals(1,result.finalQuestions!!.size)
+    }
     @Test fun parsingFailuresExposeOnlyDebugResponse() {
         for (text in listOf("Here are the crops", "{broken", "{\"wrong\":[]}")) {
             for (debug in listOf(true, false)) {
@@ -22,12 +29,12 @@ class GeminiResponseDiagnosticTest {
             }
         }
     }
-    @Test fun validOperationsRetainDiagnosticForLaterLocalValidationOnlyInDebug() {
-        val text = "{\"operations\":[{\"action\":\"KEEP\",\"id\":\"unknown\"}]}"
-        val result = GeminiResponseDiagnostic.parse(envelope(text), true, "", "")
+    @Test fun validQuestionsRetainDiagnosticOnlyInDebug() {
+        val text="""{"questions":[[100,100,400,500]]}"""
+        val result=GeminiResponseDiagnostic.parse(envelope(text),true,"","")
         assertTrue(result.debugResponse!!.contains(text))
-        try { VerificationPatch.apply(0, emptyList(), result); fail() } catch (_: IllegalArgumentException) {}
-        assertNull(GeminiResponseDiagnostic.parse(envelope(text), false, "", "").debugResponse)
+        assertFalse(VerificationPatch.apply(0,emptyList(),result).single().accepted)
+        assertNull(GeminiResponseDiagnostic.parse(envelope(text),false,"","").debugResponse)
     }
     @Test fun redactsSecretsPayloadsAndRequestEchoesButKeepsJson() {
         val clean = GeminiResponseDiagnostic.sanitize("secret-key AQID " + "A".repeat(100), "secret-key", "AQID")
@@ -62,7 +69,7 @@ class GeminiResponseDiagnosticTest {
                 assertFalse(applied)
                 assertFalse(status.contains("unsafe"))
                 if (debug && stage in listOf(VerificationStage.PARSING, VerificationStage.VALIDATION))
-                    assertEquals("safe response", diagnostic) else assertNull(diagnostic)
+                    assertTrue(diagnostic!!.startsWith("safe response")) else assertNull(diagnostic)
             } finally { queue.close(); scope.cancel() }
         }
     }

@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-/** Independent answers plus a shared notebook-page view, with save-before-navigation. */
+/** Independent answers plus a separate question scratch canvas, with save-before-navigation. */
 enum class QuestionPeek { FOCUSED, FADED }
 
 class QuestionSession(set: QuestionSetRepository.LoadedSet, val sourcePdf: File,
@@ -101,7 +101,7 @@ class QuestionSession(set: QuestionSetRepository.LoadedSet, val sourcePdf: File,
                 var saved = true
                 try { if (!deletePending) beforeTransition?.invoke() }
                 catch (e: CancellationException) { throw e }
-                catch (_: Exception) { progressError = "Could not save notebook ink. Retry before leaving."; saved = false }
+                catch (_: Exception) { progressError = "Could not save question workspace. Retry before leaving."; saved = false }
                 for (host in hosts) if (!host.prepareTransition()) saved = false
                 if (saved && !deletePending && !persistProgress()) saved = false
                 if (saved) { progressError = null; action() }

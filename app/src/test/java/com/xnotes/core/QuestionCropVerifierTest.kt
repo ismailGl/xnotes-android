@@ -20,7 +20,7 @@ class QuestionCropVerifierTest {
     }
     @Test fun allFourActionsAndStableIds() {
         val result = patch(VerificationOperation(VerificationAction.KEEP, "p1"),
-            VerificationOperation(VerificationAction.ADJUST, "p2", -.1, .2, .8, 1.1),
+            VerificationOperation(VerificationAction.ADJUST, "p2", 0.0, .2, .8, 1.0),
             VerificationOperation(VerificationAction.DELETE, "p3"),
             VerificationOperation(VerificationAction.ADD, left=.5, top=.5, right=.9, bottom=.9))
         assertEquals(listOf("p1", "p2", "new"), result.map { it.id })
@@ -45,30 +45,51 @@ class QuestionCropVerifierTest {
         val add = VerificationOperation(VerificationAction.ADD,left=.1,top=.1,right=.5,bottom=.5)
         bad { patch(add,add) }
     }
-    @Test fun omittedProposalsRemainUnchanged() { assertEquals(3, patch().size) }
-    @Test fun strictJsonOnly() {
-        val valid = """{"operations":[{"action":"KEEP","id":"p1"}]}"""
-        assertEquals(VerificationAction.KEEP, GeminiVerificationJson.operations(valid).operations.single().action)
-        listOf("```json\n$valid\n```", "$valid trailing", "{operations:[]}", "{'operations':[]}",
-            """{"operations":[],"operations":[]}""", """{"operations":[{"action":"KEEP","id":1}]}""",
-            """{"operations":[{"action":"ADD","left":"0.1"}]}""", """{"operations":[],}""",
-            """{"operations":[],"extra":true}""").forEach { bad { GeminiVerificationJson.operations(it) } }
+    @Test fun mixedPixelCoordinatesRejectedAndNormalizedAddAccepted() {
+        bad { patch(VerificationOperation(VerificationAction.ADD,left=.354,top=105.0,right=.648,bottom=574.0)) }
+        bad { patch(VerificationOperation(VerificationAction.ADD,left=-.01,top=.1,right=.6,bottom=.7)) }
+        val added = patch(VerificationOperation(VerificationAction.ADD,left=.354,top=.105,right=.648,bottom=.574)).last()
+        assertEquals(NormalizedRect(.354,.105,.648,.574),added.crop)
+        assertFalse(added.accepted)
     }
-    @Test fun responseMustBeCompleteAndRequestPreservesCurrentSchemaFreeFormat() {
-        val request = JSONObject(GeminiVerificationJson.request(VerifierPageInput(4,byteArrayOf(1,2,3)),
-            listOf(VerifierProposal("stable",crop))))
-        val parts = request.getJSONArray("contents").getJSONObject(0).getJSONArray("parts")
-        assertEquals("AQID",parts.getJSONObject(0).getJSONObject("inlineData").getString("data"))
-        assertTrue(parts.getJSONObject(1).getString("text").contains("stable"))
-        val generation = request.getJSONObject("generationConfig")
-        assertFalse(generation.has("responseMimeType"))
-        assertFalse(generation.has("responseJsonSchema"))
-        assertFalse(generation.has("responseSchema"))
-        val textFormat = generation.getJSONObject("responseFormat").getJSONObject("text")
-        assertEquals("APPLICATION_JSON", textFormat.getString("mimeType"))
-        assertFalse(textFormat.has("schema"))
-        val response = """{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"{\"operations\":[]}"}]}}]}"""
-        assertTrue(GeminiVerificationJson.response(response).operations.isEmpty())
+    @Test fun omittedProposalsRemainUnchanged() { assertEquals(3, patch().size) }
+    @Test fun finalQuestionGridIsStrictAndAtomic() {
+        val original=listOf(proposal().copy(accepted=true),proposal("p2"))
+        val valid="""{"questions":[[120,85,480,410],[515,90,910,455]]}"""
+        var serial=0
+        val result=VerificationPatch.apply(0,original,GeminiVerificationJson.questions(valid)) { "ai${++serial}" }
+        assertEquals(listOf(NormalizedRect(.120,.085,.480,.410),NormalizedRect(.515,.090,.910,.455)),result.map { it.crop })
+        assertTrue(result.none { it.accepted || it.id in listOf("p1","p2") })
+        assertTrue(VerificationPatch.apply(0,original,GeminiVerificationJson.questions("{\"questions\":[]}")).isEmpty())
+        val invalid=listOf("[]", "{\"operations\":[]}", "{\"delete\":[],\"adjust\":[],\"add\":[]}",
+            valid+" prose", "```json\n$valid\n```", valid.replace("120","120.0"), valid.replace("120","0.12"),
+            valid.replace("120","-1"), valid.replace("120","1001"), valid.replace("120","null"),
+            valid.replace("120","\"120\""), valid.replace("120","NaN"), valid.replace("120","1e999"),
+            valid.replace("120,85,480,410","120,85,480"),valid.replace("120,85,480,410","120,85,480,410,500"),
+            valid.replace("120,85,480,410","480,85,120,410"),valid.replace("120,85,480,410","120,85,124,410"),
+            valid.replace("{\"questions\":","{\"extra\":0,\"questions\":"),
+            "{\"questions\":[],\"questions\":[]}")
+        for(text in invalid) {
+            var current=original
+            bad { current=VerificationPatch.apply(0,original,GeminiVerificationJson.questions(text)) }
+            assertSame(original,current)
+        }
+    }
+    @Test fun responseMustBeCompleteAndRequestUsesIndependentGridSchema() {
+        val request=JSONObject(GeminiVerificationJson.request(VerifierPageInput(4,byteArrayOf(1,2,3)),
+            listOf(VerifierProposal("private-uuid",crop))))
+        val parts=request.getJSONArray("contents").getJSONObject(0).getJSONArray("parts")
+        assertFalse(parts.getJSONObject(1).getString("text").contains("private-uuid"))
+        assertTrue(parts.getJSONObject(1).getString("text").contains("P1"))
+        val format=request.getJSONObject("generationConfig").getJSONObject("responseFormat").getJSONObject("text")
+        assertEquals("APPLICATION_JSON",format.getString("mimeType"))
+        val properties=format.getJSONObject("schema").getJSONObject("properties")
+        assertEquals(setOf("questions"),properties.keys().asSequence().toSet())
+        val box=properties.getJSONObject("questions").getJSONObject("items")
+        assertEquals(4,box.getInt("minItems")); assertEquals(4,box.getInt("maxItems"))
+        assertEquals("integer",box.getJSONObject("items").getString("type"))
+        val response="""{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"{\"questions\":[]}"}]}}]}"""
+        assertTrue(GeminiVerificationJson.response(response).finalQuestions!!.isEmpty())
         bad { GeminiVerificationJson.response(response.replace("STOP","MAX_TOKENS")) }
     }
     @Test fun missingKeyDoesNotMakeAnyNetworkRequest() = runBlocking {
@@ -197,6 +218,18 @@ class QuestionCropVerifierTest {
         h.review(0); h.close(); gate.complete(Unit)
         assertEquals(listOf(0),h.loaded)
         assertTrue(h.states.values.none { it.startsWith("AI verified") })
+    }
+    @Test fun finalSegmentationReplacesHintsAndCachesStableUnacceptedIds() {
+        var calls=0
+        val h=Harness(QuestionCropVerifier { _,_ -> calls++
+            VerificationResult(emptyList(),finalQuestions=listOf(NormalizedRect(.05,.05,.4,.4),NormalizedRect(.5,.5,.9,.9))) })
+        try {
+            h.review(49)
+            val first=h.proposals.getValue(49)
+            assertEquals(2,first.size); assertTrue(first.none { it.id=="p49" || it.accepted })
+            h.queue.retry(49)
+            assertEquals(first,h.proposals[49]); assertEquals(1,calls)
+        } finally { h.close() }
     }
     @Test fun cachedResultCanBeReappliedWithoutRequestOrNewAddIds() {
         var calls=0

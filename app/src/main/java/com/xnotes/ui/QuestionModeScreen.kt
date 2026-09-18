@@ -87,15 +87,16 @@ internal fun QuestionToolbarItem(editor: Editor, session: QuestionSession, item:
             enabled = !session.busy && session.current?.question != null) { Text("Delete") }
         ToolbarItem.QUESTION_ANSWER -> {
             var expanded by remember { mutableStateOf(false) }
+            session.answerOptions.choices.forEach { choice ->
+                FilterChip(selected = session.selectedChoice == choice,
+                    onClick = { session.selectChoice(choice) }, label = { Text(choice) },
+                    enabled = !session.busy, modifier = Modifier.padding(horizontal = 2.dp))
+            }
             Box {
                 TextButton(onClick = { expanded = true }, enabled = !session.busy) {
-                    Text("Answer: ${session.selectedChoice ?: "—"}")
+                    Text("Answer settings")
                 }
                 DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                    session.answerOptions.choices.forEach { choice ->
-                        DropdownMenuItem(text = { Text(if (session.selectedChoice == choice) "✓ $choice" else choice) },
-                            onClick = { session.selectChoice(choice); expanded = false })
-                    }
                     DropdownMenuItem(text = { Text(if (session.currentComplete) "Completed" else "Mark complete") },
                         onClick = { session.markComplete(); expanded = false })
                     if (session.pageComplete) DropdownMenuItem(text = { Text("Review completed page") },

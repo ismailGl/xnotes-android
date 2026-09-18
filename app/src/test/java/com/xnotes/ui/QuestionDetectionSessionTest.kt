@@ -28,6 +28,24 @@ class QuestionDetectionSessionTest {
         }
         override fun close() { closed=true }
     }
+    @Test fun acceptAllPreservesRejectionsAndManualAddsStartAccepted() = runBlocking {
+        val work = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            val session = QuestionDetectionSession(temp.newFile(), "uri", "Title", listOf(0,1,2),
+                QuestionSetRepository(temp.newFolder()), work, {true}, {Reader()})
+            session.scan(listOf(0,1,2)); until { !session.busy }
+            val ids = session.proposals.map { it.id }
+            session.accept(ids[0], false); session.accept(ids[1], true)
+            session.acceptAll(); session.acceptAll()
+            assertFalse(session.proposals.first { it.id == ids[0] }.accepted)
+            assertTrue(session.proposals.filter { it.id != ids[0] }.all { it.accepted })
+            val manual = session.add(0, NormalizedRect(.1,.5,.8,.9))!!
+            assertTrue(session.proposals.first { it.id == manual }.accepted)
+            val ai = VerificationPatch.apply(0, emptyList(), VerificationResult(listOf(
+                VerificationOperation(VerificationAction.ADD, left=.1, top=.5, right=.8, bottom=.9))))
+            assertFalse(ai.single().accepted)
+        } finally { work.cancel() }
+    }
     @Test fun scanAndEditsAreTemporaryAndCommitSavesOnlyAccepted() = runBlocking {
         val dir=temp.newFolder(); val pdf=temp.newFile(); val reader=Reader()
         val work=CoroutineScope(coroutineContext+SupervisorJob())
@@ -114,7 +132,7 @@ class QuestionDetectionSessionTest {
         try {
             val session=QuestionDetectionSession(temp.newFile(),"uri","Title",listOf(0),QuestionSetRepository(dir),
                 work,{true},{Reader()}, QuestionCropVerifier { _,p -> calls++
-                    VerificationResult(listOf(VerificationOperation(VerificationAction.ADJUST,p.single().id,.1,.1,.9,.9)))
+                    VerificationResult(emptyList(),finalQuestions=listOf(NormalizedRect(.1,.1,.9,.9)))
                 },"fake",{ VerifierPageInput(it,byteArrayOf(1)) })
             session.scan(listOf(0)); until { !session.busy }; session.review(0)
             val original=session.proposals
