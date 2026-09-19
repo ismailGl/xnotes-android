@@ -34,6 +34,7 @@ class QuestionDetectionSession(
     var aiEnabled by mutableStateOf(false); private set
     var aiStatuses by mutableStateOf<Map<Int, String>>(emptyMap()); private set
     var aiDiagnostics by mutableStateOf<Map<Int, String>>(emptyMap()); private set
+    private val localPlans = mutableMapOf<Int, LocalVerificationPlan>()
     private var originalProposals = emptyMap<Int, List<DetectedQuestion>>()
     private val explicitlyRejected = mutableSetOf<String>()
     private val manuallyTouched = mutableSetOf<Int>()
@@ -70,11 +71,23 @@ class QuestionDetectionSession(
     }
     private fun startVerification(identity: String) {
         originalProposals = pages.associateWith { page -> proposals.filter { it.sourcePageIndex == page } }
-        verification = VerificationQueue(scope, identity, verifierVersion, verifier, verifierPage,
+        verification = VerificationQueue(scope, identity, verifierVersion, verifier, { page ->
+            val snapshot = proposals.filter { it.sourcePageIndex == page }.map { VerifierProposal(it.id,it.crop) }
+            val cached = localPlans[page]
+            val plan = if(cached?.proposals == snapshot) cached else withContext(Dispatchers.IO) {
+                openExtractor().use { reader ->
+                    val data=reader.page(page)
+                    LocalVerificationPlan.build(snapshot,data.runs,data.layout,
+                        requireNotNull(pageDiagnostics[page]))
+                }
+            }
+            val input=verifierPage(page)
+            VerifierPageInput(input.pageIndex,input.image,input.mimeType,plan,input.renderRegion)
+        },
             { page -> proposals.filter { it.sourcePageIndex == page } },
             { page, repaired ->
                 if (stillCurrent() && !busy && !saving && page !in manuallyTouched) {
-                    proposals = proposals.filterNot { it.sourcePageIndex == page } + repaired.map { it.copy(accepted = false) }
+                    proposals = proposals.filterNot { it.sourcePageIndex == page } + repaired
                     status = "${proposals.size} proposals · review before adding"
                     if (repaired.isNotEmpty()) errors = errors.filterNot { it.startsWith("Page ${page + 1}: no numbered questions") }
                 }
@@ -91,6 +104,7 @@ class QuestionDetectionSession(
         if (targets.isEmpty() || targets.any { it !in availablePages }) { status = "Choose PDF-backed pages from this notebook"; return }
         verification?.close(); verification = null
         explicitlyRejected.clear(); manuallyTouched.clear(); originalProposals = emptyMap(); aiStatuses = emptyMap(); aiDiagnostics = emptyMap()
+        localPlans.clear()
         pageDiagnostics = emptyMap()
         pageSources = emptyMap()
         busy = true; proposals = emptyList(); pages = targets; errors = emptyList(); sourceId = null
@@ -117,12 +131,16 @@ class QuestionDetectionSession(
                             pageDiagnostics = pageDiagnostics + (page to analysis)
                             pageSources = pageSources + (page to data.textSource)
                             if (detected.isEmpty()) errors = errors + "Page ${page + 1}: no numbered questions found. Add rectangles manually or try a clearer scan."
-                            proposals = proposals + detected.map { it.copy(id = UUID.randomUUID().toString(),
+                            val pageProposals = detected.map { it.copy(id = UUID.randomUUID().toString(),
                                 reasons = it.reasons + when {
                                     duplicate(page,it.crop) -> listOf("Overlaps an existing question; duplicate will be skipped")
                                     possibleDuplicate(page,it.crop) -> listOf("May contain an existing manual question; check before accepting")
                                     else -> emptyList()
                                 }) }
+                            proposals = proposals + pageProposals
+                            if (aiAvailable) localPlans[page] = withContext(Dispatchers.Default) {
+                                LocalVerificationPlan.build(pageProposals.map { VerifierProposal(it.id,it.crop) },data.runs,data.layout,analysis)
+                            }
                         } catch (e: CancellationException) { throw e }
                         catch (_: Exception) { errors = errors + "Page ${page + 1}: PDF text/OCR/layout extraction failed; add rectangles manually" }
                     }

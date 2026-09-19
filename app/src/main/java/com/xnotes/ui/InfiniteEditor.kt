@@ -97,7 +97,7 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
         configFor = { configFor(it) },
         onWetStroke = { publishWetStroke(it) },
         onCommitStroke = { commitStroke(it) },
-        onEraseBegin = { EraseSession(document) },
+        onEraseBegin = { EraseSession(document, sourceEraseTarget?.invoke()) },
         onEraseEnd = { commitErase(it) },
         onEraserCursor = { at, radius -> view.setEraserCursor(at, radius) },
         onPendingShape = { publishPendingShape(it) },
@@ -161,6 +161,7 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
 
     /** Fired after any edit that makes the document dirty, so the host can schedule an autosave. */
     var onContentChanged: (() -> Unit)? = null
+    var sourceEraseTarget: (() -> com.xnotes.core.infinite.EraseTarget?)? = null
 
     /** Whether the minimap is shown. */
     var minimapVisible by mutableStateOf(true)

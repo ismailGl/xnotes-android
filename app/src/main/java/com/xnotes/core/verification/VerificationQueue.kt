@@ -24,6 +24,7 @@ class VerificationQueue(
     init { require(timeoutMillis > 0) }
     private data class Key(val document: String, val page: Int, val proposals: List<DetectedQuestion>, val config: String)
     private val cache = mutableMapOf<Key, List<DetectedQuestion>>()
+    private val auditCache = mutableMapOf<Key, String>()
     private val attempted = mutableSetOf<Key>()
     private var window = emptyList<Int>()
     private var enabled = false
@@ -41,6 +42,7 @@ class VerificationQueue(
                 var responseDiagnostic: String? = null
                 try {
                     val cached = cache[key]
+                    if (debugDiagnostics) responseDiagnostic = auditCache[key]
                     val repaired = cached ?: withTimeout(timeoutMillis) {
                         val input = loadPage(key.page)
                         require(input.pageIndex == key.page)
@@ -55,6 +57,11 @@ class VerificationQueue(
                         apply(key.page, repaired)
                         val outputKey = key(key.page)
                         cache[outputKey] = repaired
+                        if (debugDiagnostics && responseDiagnostic != null) {
+                            auditCache[key] = responseDiagnostic!!
+                            auditCache[outputKey] = responseDiagnostic!!
+                            diagnostic(key.page, responseDiagnostic)
+                        }
                         attempted += outputKey
                         status(key.page, "AI verified · review before accepting")
                     } else attempted.remove(key)

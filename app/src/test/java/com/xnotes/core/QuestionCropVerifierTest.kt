@@ -53,29 +53,7 @@ class QuestionCropVerifierTest {
         assertFalse(added.accepted)
     }
     @Test fun omittedProposalsRemainUnchanged() { assertEquals(3, patch().size) }
-    @Test fun finalQuestionGridIsStrictAndAtomic() {
-        val original=listOf(proposal().copy(accepted=true),proposal("p2"))
-        val valid="""{"questions":[[120,85,480,410],[515,90,910,455]]}"""
-        var serial=0
-        val result=VerificationPatch.apply(0,original,GeminiVerificationJson.questions(valid)) { "ai${++serial}" }
-        assertEquals(listOf(NormalizedRect(.120,.085,.480,.410),NormalizedRect(.515,.090,.910,.455)),result.map { it.crop })
-        assertTrue(result.none { it.accepted || it.id in listOf("p1","p2") })
-        assertTrue(VerificationPatch.apply(0,original,GeminiVerificationJson.questions("{\"questions\":[]}")).isEmpty())
-        val invalid=listOf("[]", "{\"operations\":[]}", "{\"delete\":[],\"adjust\":[],\"add\":[]}",
-            valid+" prose", "```json\n$valid\n```", valid.replace("120","120.0"), valid.replace("120","0.12"),
-            valid.replace("120","-1"), valid.replace("120","1001"), valid.replace("120","null"),
-            valid.replace("120","\"120\""), valid.replace("120","NaN"), valid.replace("120","1e999"),
-            valid.replace("120,85,480,410","120,85,480"),valid.replace("120,85,480,410","120,85,480,410,500"),
-            valid.replace("120,85,480,410","480,85,120,410"),valid.replace("120,85,480,410","120,85,124,410"),
-            valid.replace("{\"questions\":","{\"extra\":0,\"questions\":"),
-            "{\"questions\":[],\"questions\":[]}")
-        for(text in invalid) {
-            var current=original
-            bad { current=VerificationPatch.apply(0,original,GeminiVerificationJson.questions(text)) }
-            assertSame(original,current)
-        }
-    }
-    @Test fun responseMustBeCompleteAndRequestUsesIndependentGridSchema() {
+    @Test fun responseMustBeCompleteAndRequestUsesSemanticSchema() {
         val request=JSONObject(GeminiVerificationJson.request(VerifierPageInput(4,byteArrayOf(1,2,3)),
             listOf(VerifierProposal("private-uuid",crop))))
         val parts=request.getJSONArray("contents").getJSONObject(0).getJSONArray("parts")
@@ -84,13 +62,15 @@ class QuestionCropVerifierTest {
         val format=request.getJSONObject("generationConfig").getJSONObject("responseFormat").getJSONObject("text")
         assertEquals("APPLICATION_JSON",format.getString("mimeType"))
         val properties=format.getJSONObject("schema").getJSONObject("properties")
-        assertEquals(setOf("questions"),properties.keys().asSequence().toSet())
-        val box=properties.getJSONObject("questions").getJSONObject("items")
-        assertEquals(4,box.getInt("minItems")); assertEquals(4,box.getInt("maxItems"))
-        assertEquals("integer",box.getJSONObject("items").getString("type"))
-        val response="""{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"{\"questions\":[]}"}]}}]}"""
-        assertTrue(GeminiVerificationJson.response(response).finalQuestions!!.isEmpty())
+        assertEquals(setOf("decisions"),properties.keys().asSequence().toSet())
+        val fields=properties.getJSONObject("decisions").getJSONObject("items").getJSONObject("properties")
+        assertEquals(setOf("action","target"),fields.keys().asSequence().toSet())
+        val response=JSONObject().put("candidates",org.json.JSONArray().put(JSONObject().put("finishReason","STOP")
+            .put("content",JSONObject().put("parts",org.json.JSONArray().put(JSONObject().put("text","{\"decisions\":[]}")))))).toString()
+        assertTrue(GeminiVerificationJson.response(response).decisions!!.isEmpty())
         bad { GeminiVerificationJson.response(response.replace("STOP","MAX_TOKENS")) }
+        for(text in listOf("{\"questions\":[]}","[]","{\"decisions\":[{\"action\":\"ADD\",\"target\":\"C1\"}]}"))
+            bad { GeminiVerificationJson.decisions(text) }
     }
     @Test fun missingKeyDoesNotMakeAnyNetworkRequest() = runBlocking {
         val config = GeminiVerifierConfig("  ")
@@ -219,10 +199,12 @@ class QuestionCropVerifierTest {
         assertEquals(listOf(0),h.loaded)
         assertTrue(h.states.values.none { it.startsWith("AI verified") })
     }
-    @Test fun finalSegmentationReplacesHintsAndCachesStableUnacceptedIds() {
+    @Test fun localReplacementCachesStableUnacceptedIds() {
         var calls=0
         val h=Harness(QuestionCropVerifier { _,_ -> calls++
-            VerificationResult(emptyList(),finalQuestions=listOf(NormalizedRect(.05,.05,.4,.4),NormalizedRect(.5,.5,.9,.9))) })
+            VerificationResult(listOf(VerificationOperation(VerificationAction.DELETE,"p49"),
+                VerificationOperation(VerificationAction.ADD,left=.05,top=.05,right=.4,bottom=.4),
+                VerificationOperation(VerificationAction.ADD,left=.5,top=.5,right=.9,bottom=.9))) })
         try {
             h.review(49)
             val first=h.proposals.getValue(49)

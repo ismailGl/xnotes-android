@@ -23,8 +23,21 @@ class VerifierPageRenderer(private val context: Context, private val file: File)
                     check(bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it)); it.toByteArray()
                 }
                 ensureActive()
-                VerifierPageInput(index, bytes)
+                VerifierPageInput(index, bytes, renderRegion = { box -> region(index, box) })
             } finally { bitmap.recycle() }
+        } finally { source.close() }
+    }
+    private suspend fun region(index: Int, box: com.xnotes.core.model.NormalizedRect): ByteArray = withContext(Dispatchers.IO) {
+        val source=requireNotNull(PdfSource.create(context,file))
+        try {
+            val (w,h)=requireNotNull(source.pageSizePoints(index))
+            val scale=maxOf(3072.0/maxOf(w,h),1536.0/maxOf(w*(box.right-box.left),h*(box.bottom-box.top)))
+            val fw=(w*scale).roundToInt(); val fh=(h*scale).roundToInt()
+            ensureActive()
+            val bitmap=requireNotNull(source.renderRegion(index,fw,fh,(box.left*fw).toInt(),(box.top*fh).toInt(),
+                ((box.right-box.left)*fw).roundToInt(),((box.bottom-box.top)*fh).roundToInt())).bitmap
+            try { ByteArrayOutputStream().use { check(bitmap.compress(Bitmap.CompressFormat.JPEG,90,it)); it.toByteArray() } }
+            finally { bitmap.recycle() }
         } finally { source.close() }
     }
 }

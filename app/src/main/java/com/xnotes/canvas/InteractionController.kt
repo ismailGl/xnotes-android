@@ -298,10 +298,7 @@ class InteractionController(
     private var screenshotOrigin = Pt.ZERO
 
     // ERASE
-    private val eraseRemovals = mutableListOf<Pair<Page, CanvasItem>>()
-    /** AREA mode: each touched page's item list snapshotted on first contact this gesture, so the
-     *  whole split-and-trim drag undoes/redoes as one [ReplacePageItems] step. */
-    private val eraseSnapshots = linkedMapOf<Page, List<CanvasItem>>()
+    private var pageEraseSession = com.xnotes.core.history.PageEraseSession()
     private var eraserCursor: Pt? = null // viewport pixels
     /** Tool armed just before the eraser was selected, for the "switch back after erasing" option. */
     private var toolBeforeEraser: Tool? = null
@@ -1147,8 +1144,7 @@ class InteractionController(
     private fun areaErase(): Boolean = configFor(Tool.ERASER).eraseMode == EraseMode.AREA
 
     private fun beginErase(vx: Double, vy: Double) {
-        eraseRemovals.clear()
-        eraseSnapshots.clear()
+        pageEraseSession = com.xnotes.core.history.PageEraseSession()
         mode = PointerMode.ERASE
         eraseAt(vx, vy)
     }
@@ -1170,8 +1166,7 @@ class InteractionController(
             val local = state.toPageSpace(pi, content)
             val cx = local.x
             val cy = local.y
-            val dirty = if (area) eraseAreaFromPage(page, cx, cy, radius)
-            else eraseStrokesFromPage(page, cx, cy, radius)
+            val dirty = pageEraseSession.erase(page, cx, cy, radius, area)
             if (dirty != null) {
                 // Repaint only the erased area in place; fall back to a full
                 // rebuild only when the page has no live cache yet.
@@ -1184,76 +1179,13 @@ class InteractionController(
         requestRender()
     }
 
-    /** STROKE mode: remove every stroke/shape the eraser circle touches. Images and text boxes are
-     *  deliberately-placed and protected (delete those via select + delete). Returns the repaint
-     *  region, or null if nothing changed. */
-    private fun eraseStrokesFromPage(page: Page, cx: Double, cy: Double, radius: Double): Rect? {
-        val toRemove = page.items.filter {
-            !it.locked && it !is ImageItem && it !is TextItem && it.intersectsCircle(cx, cy, radius)
-        }
-        if (toRemove.isEmpty()) return null
-        var dirty: Rect? = null
-        for (item in toRemove) {
-            page.items.remove(item)
-            eraseRemovals.add(page to item)
-            val b = item.paintBounds()
-            dirty = dirty?.union(b) ?: b
-        }
-        return dirty
-    }
-
-    /** AREA mode: replace each touched stroke or shape with the fragments that survive the eraser
-     *  circle, spliced in at the original's z-position. Text and images are left untouched. Returns
-     *  the repaint region, or null if nothing changed. */
-    private fun eraseAreaFromPage(page: Page, cx: Double, cy: Double, radius: Double): Rect? {
-        var dirty: Rect? = null
-        var i = 0
-        while (i < page.items.size) {
-            val item = page.items[i]
-            val frags: List<CanvasItem>? = if (item.locked) {
-                null
-            } else {
-                when (item) {
-                    is Stroke -> item.erasedBy(cx, cy, radius)
-                    is ShapeItem -> item.erasedBy(cx, cy, radius)
-                    else -> null
-                }
-            }
-            if (frags == null) {
-                i++
-                continue
-            }
-            // Snapshot the page's items on first contact this gesture, before mutating it.
-            if (!eraseSnapshots.containsKey(page)) eraseSnapshots[page] = page.items.toList()
-            val b = item.paintBounds()
-            dirty = dirty?.union(b) ?: b
-            page.items.removeAt(i)
-            page.items.addAll(i, frags)
-            i += frags.size // step past the freshly-inserted fragments
-        }
-        return dirty
-    }
-
     private fun endErase() {
-        if (areaErase()) {
-            // One drag may split/trim many strokes across pages; commit each touched page's
-            // net before/after as one undo step.
-            val cmds = eraseSnapshots.mapNotNull { (page, before) ->
-                val after = page.items.toList()
-                if (after != before) ReplacePageItems(page, before, after) else null
-            }
-            if (cmds.isNotEmpty()) {
-                history.push(if (cmds.size == 1) cmds[0] else CompositeCommand(cmds))
-                state.document.dirty = true
-                onContentChanged()
-            }
-        } else if (eraseRemovals.isNotEmpty()) {
-            history.push(EraseItems(eraseRemovals.toList()))
+        pageEraseSession.buildCommand()?.let {
+            history.push(it)
             state.document.dirty = true
             onContentChanged()
         }
-        eraseRemovals.clear()
-        eraseSnapshots.clear()
+        pageEraseSession = com.xnotes.core.history.PageEraseSession()
         eraserCursor = null
         mode = PointerMode.IDLE
         requestRender()

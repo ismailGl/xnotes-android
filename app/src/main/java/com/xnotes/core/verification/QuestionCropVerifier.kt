@@ -4,13 +4,15 @@ import com.xnotes.core.model.*
 import java.util.UUID
 
 /** Complete upright page, never a PDF or an editor screenshot. */
-class VerifierPageInput(val pageIndex: Int, val image: ByteArray, val mimeType: String = "image/jpeg")
+class VerifierPageInput(val pageIndex: Int, val image: ByteArray, val mimeType: String = "image/jpeg",
+    val plan: LocalVerificationPlan? = null,
+    val renderRegion: (suspend (NormalizedRect) -> ByteArray)? = null)
 data class VerifierProposal(val id: String, val crop: NormalizedRect)
 enum class VerificationAction { KEEP, ADJUST, DELETE, ADD }
 data class VerificationOperation(val action: VerificationAction, val id: String? = null,
     val left: Double? = null, val top: Double? = null, val right: Double? = null, val bottom: Double? = null)
 data class VerificationResult(val operations: List<VerificationOperation>, val debugResponse: String? = null,
-    val finalQuestions: List<NormalizedRect>? = null)
+    val decisions: List<SemanticDecision>? = null)
 fun interface QuestionCropVerifier {
     suspend fun verify(page: VerifierPageInput, proposals: List<VerifierProposal>): VerificationResult
 }
@@ -26,18 +28,10 @@ object VerificationPatch {
     /** Atomic: all operations must validate before the caller replaces any proposals. */
     fun apply(page: Int, original: List<DetectedQuestion>, result: VerificationResult,
               newId: () -> String = { UUID.randomUUID().toString() }): List<DetectedQuestion> {
+        require(result.decisions == null) { "Local rule: semantic decisions must be resolved against a local plan" }
         require(original.all { it.sourcePageIndex == page }) { "Local rule: all original proposals must belong to the requested page" }
         require(original.map { it.id }.distinct().size == original.size) { "Local rule: original proposal IDs must be unique" }
         require(result.operations.size <= 256) { "Local rule: at most 256 operations are allowed" }
-        result.finalQuestions?.let { boxes ->
-            require(result.operations.isEmpty() && boxes.size <= 256) { "Local rule: final questions must be exclusive and limited to 256" }
-            val additions = boxes.map { VerificationOperation(VerificationAction.ADD,
-                left=it.left, top=it.top, right=it.right, bottom=it.bottom) }
-            // Reuse strict geometry validation atomically; no detector IDs or acceptance survive replacement.
-            return apply(page, emptyList(), VerificationResult(additions), newId).also { proposals ->
-                require(proposals.none { p -> original.any { it.id == p.id } }) { "Local rule: final proposal IDs must be new" }
-            }
-        }
         val byId = original.associateBy { it.id }
         val seen = mutableSetOf<String>()
         val additions = mutableListOf<DetectedQuestion>()

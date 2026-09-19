@@ -11,12 +11,12 @@ class GeminiResponseDiagnosticTest {
         JSONObject().put("finishReason", "STOP").put("content", JSONObject().put("parts",
             org.json.JSONArray().put(JSONObject().put("text", text)))))).toString()
 
-    @Test fun onlyCanonicalQuestionsAreAccepted() {
+    @Test fun onlyCanonicalDecisionsAreAccepted() {
         for(old in listOf("[]","{\"operations\":[]}","{\"delete\":[],\"adjust\":[],\"add\":[]}")) {
             try { GeminiResponseDiagnostic.parse(envelope(old),true,"",""); fail() } catch (_:VerificationFailure) {}
         }
-        val result=GeminiResponseDiagnostic.parse(envelope("{\"questions\":[[100,100,400,500]]}"),false,"","")
-        assertEquals(1,result.finalQuestions!!.size)
+        val result=GeminiResponseDiagnostic.parse(envelope("{\"decisions\":[{\"action\":\"KEEP\",\"target\":\"P1\"}]}"),false,"","")
+        assertEquals(1,result.decisions!!.size)
     }
     @Test fun parsingFailuresExposeOnlyDebugResponse() {
         for (text in listOf("Here are the crops", "{broken", "{\"wrong\":[]}")) {
@@ -29,11 +29,11 @@ class GeminiResponseDiagnosticTest {
             }
         }
     }
-    @Test fun validQuestionsRetainDiagnosticOnlyInDebug() {
-        val text="""{"questions":[[100,100,400,500]]}"""
+    @Test fun validDecisionsRetainDiagnosticOnlyInDebug() {
+        val text="""{"decisions":[{"action":"KEEP","target":"P1"}]}"""
         val result=GeminiResponseDiagnostic.parse(envelope(text),true,"","")
         assertTrue(result.debugResponse!!.contains(text))
-        assertFalse(VerificationPatch.apply(0,emptyList(),result).single().accepted)
+        assertEquals(SemanticAction.KEEP,result.decisions!!.single().action)
         assertNull(GeminiResponseDiagnostic.parse(envelope(text),false,"","").debugResponse)
     }
     @Test fun redactsSecretsPayloadsAndRequestEchoesButKeepsJson() {

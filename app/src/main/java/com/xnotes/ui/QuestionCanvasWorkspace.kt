@@ -31,9 +31,20 @@ class QuestionCanvasWorkspace(context: Context, val editor: InfiniteEditor,
     private var deleting = false
     private var activeQuestion: Question? = null
     private var reference: ImageItem? = null
+    private var sourceRefresh: Job? = null
+    private var sourceRevision = 0
+    private var visibleSourceItems: List<CanvasItem> = emptyList()
     private val scratch = QuestionScratchStore(files, setId, codec, imageDir)
 
     init {
+        editor.sourceEraseTarget = {
+            val question = activeQuestion
+            val image = reference
+            val page = question?.let { q -> notebook.pages.firstOrNull { it.pdfPage == q.sourcePageIndex } }
+            if (question == null || image == null || page == null || deleting) null else
+                QuestionSourceEraser(page, image.rect, QuestionCanvasMigration.anchor(question, page.width, page.height),
+                    image.orientation, ::sourceChanged)
+        }
         editor.onContentChanged = {
             project()
             debounce?.cancel()
@@ -49,6 +60,7 @@ class QuestionCanvasWorkspace(context: Context, val editor: InfiniteEditor,
 
     suspend fun open(question: Question?) {
         editor.finishInput()
+        sourceRefresh?.cancelAndJoin()
         editor.inputEnabled = false
         try {
             if (!deleting) id?.let { retained[it] = editor.document to editor.history }
@@ -76,6 +88,7 @@ class QuestionCanvasWorkspace(context: Context, val editor: InfiniteEditor,
             }
             id = question.id
             activeQuestion = question
+            visibleSourceItems = sourceItems()
             this.reference = reference
             deleting = false
             editor.setReferenceItems(listOf(reference))
@@ -87,6 +100,7 @@ class QuestionCanvasWorkspace(context: Context, val editor: InfiniteEditor,
 
     suspend fun updateCrop(question: Question) {
         if (id == question.id) {
+            sourceRefresh?.cancelAndJoin()
             activeQuestion = question
             reference = image(question)
             editor.setReferenceItems(listOf(requireNotNull(reference)))
@@ -135,6 +149,41 @@ class QuestionCanvasWorkspace(context: Context, val editor: InfiniteEditor,
         onProjectionChanged()
     }
 
+    /** Recompose only source mutations; scratch drawing keeps its existing projection path. */
+    private fun sourceItems(): List<CanvasItem> {
+        val question = activeQuestion ?: return emptyList()
+        return notebook.pages.firstOrNull { it.pdfPage == question.sourcePageIndex }?.items.orEmpty()
+            .filterNot { it is QuestionInkProjection && it.owner == "$setId:${question.id}" }
+    }
+
+    /** The normal editor's mutation/undo path also invalidates this display-only composition. */
+    fun refreshSourceInk() {
+        if (activeQuestion != null && !deleting && sourceItems() != visibleSourceItems) sourceChanged()
+    }
+
+    private fun sourceChanged() {
+        visibleSourceItems = sourceItems()
+        notebook.dirty = true
+        onProjectionChanged()
+        sourceRevision++
+        if (sourceRefresh?.isActive == true) return
+        sourceRefresh = scope.launch {
+            try {
+                do {
+                    val revision = sourceRevision
+                    val question = activeQuestion ?: return@launch
+                    val refreshed = image(question)
+                    if (activeQuestion?.id != question.id) return@launch
+                    if (revision == sourceRevision) {
+                        reference = refreshed
+                        editor.setReferenceItems(listOf(refreshed))
+                    }
+                } while (revision != sourceRevision)
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { onError("Could not refresh question source ink") }
+        }
+    }
+
     suspend fun save() = writes.withLock {
         if (deleting) return@withLock
         val current = id ?: return@withLock
@@ -165,8 +214,10 @@ class QuestionCanvasWorkspace(context: Context, val editor: InfiniteEditor,
     }
 
     suspend fun close() {
+        sourceRefresh?.cancelAndJoin()
         debounce?.cancelAndJoin()
         editor.onContentChanged = null
+        editor.sourceEraseTarget = null
         editor.setReferenceItems(emptyList())
         retained.clear()
         renderer.close()

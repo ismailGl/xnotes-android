@@ -11,7 +11,7 @@ internal object GeminiResponseDiagnostic {
             return GeminiVerificationJson.response(body).copy(debugResponse = diagnostic)
         } catch (e: Exception) {
             val reason = sanitize(e.message ?: e.javaClass.simpleName, apiKey, imageBase64)
-            throw VerificationFailure("Could not decode a complete questions response",
+            throw VerificationFailure("Could not decode a complete semantic decision response",
                 VerificationStage.PARSING, diagnostic?.plus("\nParser rejection: $reason"))
         }
     }

@@ -2283,6 +2283,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     }
 
     private fun refreshContent() {
+        questionWorkspace?.refreshSourceInk()
         republishFlowIfStale()
         canUndo = history.canUndo
         canRedo = history.canRedo

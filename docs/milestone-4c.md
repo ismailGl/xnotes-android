@@ -110,4 +110,8 @@ Regression coverage includes inside/outside/crossing strokes, translated/scaled/
 
 ### Independent segmentation and source-ink display follow-up
 
-The prior delete/adjust/add wire protocol is superseded by the integer-grid questions list. Source notebook ink is displayed as a clipped read-only crop layer, excluding the active scratch projection. See [biology segmentation validation](biology-segmentation-validation.md) for implementation, real-page boundary comparisons and the remaining model-quality failures.
+The prior delete/adjust/add wire protocol was superseded by the integer-grid questions list. See [biology segmentation validation](biology-segmentation-validation.md) for that historical implementation and its model-quality failures.
+
+### Semantic verification and eraser follow-up (2026-09-20)
+
+The integer-grid protocol is now superseded by semantic decisions selecting locally generated candidates. Gemini no longer supplies crop coordinates. See [semantic verification results](biology-semantic-verification.md) for the current protocol, protection rules, biology page comparisons, remaining failures and the separate source-ink eraser correction.

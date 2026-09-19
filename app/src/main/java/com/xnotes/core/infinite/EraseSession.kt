@@ -26,7 +26,12 @@ import java.util.IdentityHashMap
  *
  * Pure Kotlin, so the whole of the eraser's behaviour is unit-testable without a canvas.
  */
-class EraseSession(private val doc: InfiniteDocument) {
+interface EraseTarget {
+    fun erase(cx: Double, cy: Double, radius: Double, area: Boolean): Rect?
+    fun buildCommand(): Command?
+}
+
+class EraseSession(private val doc: InfiniteDocument, private val source: EraseTarget? = null) {
 
     private class Entry(val at: Int, val original: CanvasItem, val fragments: MutableList<CanvasItem>)
 
@@ -38,7 +43,8 @@ class EraseSession(private val doc: InfiniteDocument) {
     private val originOf = IdentityHashMap<CanvasItem, CanvasItem>()
 
     /** Whether the drag has cut anything at all. */
-    val isEmpty: Boolean get() = entries.isEmpty()
+    private var sourceTouched = false
+    val isEmpty: Boolean get() = entries.isEmpty() && !sourceTouched
 
     /**
      * Pass the eraser over ([cx], [cy]) with [radius], in content space. Returns the region that
@@ -50,7 +56,8 @@ class EraseSession(private val doc: InfiniteDocument) {
      */
     fun erase(cx: Double, cy: Double, radius: Double, area: Boolean): Rect? {
         val box = Rect(cx - radius, cy - radius, radius * 2, radius * 2)
-        var dirty: Rect? = null
+        var dirty: Rect? = source?.erase(cx, cy, radius, area)
+        if (dirty != null) sourceTouched = true
         for (item in doc.itemsIn(box)) {
             if (item.locked || item is ImageItem || item is TextItem) continue
             val fragments: List<CanvasItem> = if (area) {
@@ -73,12 +80,16 @@ class EraseSession(private val doc: InfiniteDocument) {
     }
 
     /** The single undoable edit for the whole drag, or null when it cut nothing. */
-    fun buildCommand(): Command? =
-        if (entries.isEmpty()) {
-            null
-        } else {
+    fun buildCommand(): Command? {
+        val scratch = if (entries.isEmpty()) null else
             SplitCanvasItems(doc, entries.map { SplitCanvasItems.Split(it.at, it.original, it.fragments.toList()) })
+        val commands = listOfNotNull(source?.buildCommand(), scratch)
+        return when (commands.size) {
+            0 -> null
+            1 -> commands.single()
+            else -> com.xnotes.core.history.CompositeCommand(commands)
         }
+    }
 
     /** Fold this cut into the entry for whichever item it ultimately came from. */
     private fun record(item: CanvasItem, at: Int, fragments: List<CanvasItem>) {

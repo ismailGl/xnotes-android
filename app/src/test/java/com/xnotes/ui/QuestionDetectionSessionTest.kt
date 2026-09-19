@@ -132,7 +132,8 @@ class QuestionDetectionSessionTest {
         try {
             val session=QuestionDetectionSession(temp.newFile(),"uri","Title",listOf(0),QuestionSetRepository(dir),
                 work,{true},{Reader()}, QuestionCropVerifier { _,p -> calls++
-                    VerificationResult(emptyList(),finalQuestions=listOf(NormalizedRect(.1,.1,.9,.9)))
+                    VerificationResult(p.map { VerificationOperation(VerificationAction.DELETE,it.id) } +
+                        VerificationOperation(VerificationAction.ADD,left=.1,top=.1,right=.9,bottom=.9))
                 },"fake",{ VerifierPageInput(it,byteArrayOf(1)) })
             session.scan(listOf(0)); until { !session.busy }; session.review(0)
             val original=session.proposals
