@@ -8,6 +8,25 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class QuestionSessionTest {
+    @Test fun sidebarJumpKeepsSourceDocumentAndUsesStableId() = kotlinx.coroutines.runBlocking {
+        val pdf = File("same.pdf")
+        val scope = kotlinx.coroutines.CoroutineScope(coroutineContext + kotlinx.coroutines.SupervisorJob())
+        val ids = listOf("q3", "q1", "q2")
+        val set = QuestionSetRepository.LoadedSet("set", "Title", ids.map {
+            QuestionSetRepository.Entry(Question(it, 0, NormalizedRect(0.0,0.0,1.0,1.0)))
+        })
+        val visited = mutableListOf<String?>()
+        val session = QuestionSession(set, pdf, scope = scope, beforeTransition = {},
+            onNavigate = { visited += it?.id })
+        try {
+            session.sidebarVisible = true
+            session.jumpTo("q2")
+            kotlinx.coroutines.withTimeout(3000) { while (session.current?.question?.id != "q2") kotlinx.coroutines.yield() }
+            assertSame(pdf, session.sourcePdf)
+            assertEquals(listOf("q2"), visited)
+            assertTrue(session.sidebarVisible)
+        } finally { scope.coroutineContext[kotlinx.coroutines.Job]!!.cancel() }
+    }
     @Test fun directChoicesPersistAndPeekReturnsToSameQuestion() = kotlinx.coroutines.runBlocking {
         val scope = kotlinx.coroutines.CoroutineScope(coroutineContext + kotlinx.coroutines.SupervisorJob())
         var saved = com.xnotes.platform.QuestionProgress()

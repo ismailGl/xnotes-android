@@ -411,13 +411,15 @@ class CanvasView @JvmOverloads constructor(
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         val st = state ?: return
+        val oldCenterY = if (st.viewportW > 0 && st.viewportH > 0)
+            st.viewportToContent(com.xnotes.core.geometry.Pt(st.viewportW / 2.0, st.viewportH / 2.0)).y else null
         st.viewportW = w
         st.viewportH = h
         st.relayout()
         if (!st.didInitialFit && w > 0 && h > 0) {
             st.establishInitialView()
-        } else if (w != oldw && w > 0) {
-            st.reflowFitWidthForResize() // sidebar opened/closed: re-fit to the new width
+        } else if ((w != oldw || h != oldh) && w > 0 && h > 0) {
+            st.reflowFitWidthForResize(oldCenterY) // use this pane's measured bounds and prior centre
         }
         st.clampScroll()
         afterLayout?.invoke()

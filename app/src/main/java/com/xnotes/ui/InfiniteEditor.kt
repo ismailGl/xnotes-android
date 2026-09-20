@@ -71,6 +71,7 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
 
     private var referenceItems: List<ImageItem> = emptyList()
     var inputEnabled = true
+    var readOnly = false
     private var lastInput: android.view.MotionEvent? = null
 
     val view = InfiniteCanvasView(appContext)
@@ -257,13 +258,14 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
     init {
         view.input = {
             if (inputEnabled) {
+                if (readOnly) interaction.tool = Tool.PAN
                 lastInput?.recycle()
                 lastInput = android.view.MotionEvent.obtain(it)
                 interaction.onTouch(it)
             } else true
         }
         view.genericMotion = { interaction.onGenericMotion(it) }
-        view.afterLayout = { applyInitialView() }
+        view.afterLayout = { handleViewportLayout() }
         view.onContextReady = { renderFailure = view.failure }
         pad.onSurfaceLost = { endFrontInk(); settleHeld() }
         view.onFourFingerTap = { toggleDebug() }
@@ -1463,6 +1465,30 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
     // --- view ---
 
     private var appliedInitialView = false
+    /** The host can reframe display-only content after this canvas receives its real pane size. */
+    var onViewportResized: ((oldWidth: Int, oldHeight: Int) -> Boolean)? = null
+    private var laidOutWidth = 0
+    private var laidOutHeight = 0
+
+    private fun handleViewportLayout() {
+        val oldWidth = laidOutWidth
+        val oldHeight = laidOutHeight
+        laidOutWidth = viewport.widthPx
+        laidOutHeight = viewport.heightPx
+        if (!appliedInitialView) {
+            applyInitialView()
+            onViewportResized?.invoke(oldWidth, oldHeight)
+            return
+        }
+        if (oldWidth == laidOutWidth && oldHeight == laidOutHeight) return
+        if (oldWidth > 0 && oldHeight > 0 && onViewportResized?.invoke(oldWidth, oldHeight) != true) {
+            val cx = viewport.scrollX + oldWidth / (2.0 * viewport.zoom)
+            val cy = viewport.scrollY + oldHeight / (2.0 * viewport.zoom)
+            viewport.centerOn(cx, cy)
+            onViewChanged()
+            view.publish()
+        }
+    }
 
     /**
      * Put the canvas where it was left, or on its content, or at the origin. Runs once the viewport
@@ -1493,6 +1519,21 @@ class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongP
         }
         onViewChanged()
         view.publish()
+    }
+
+    /** Frame a host-owned reference without including scratch ink outside the question crop. */
+    fun fitReference(rect: Rect, fit: com.xnotes.core.infinite.ReferenceViewportFit) {
+        fit.fit(viewport, rect)
+        if (viewport.widthPx <= 0 || viewport.heightPx <= 0) return
+        onViewChanged()
+        view.publish()
+    }
+
+    fun refitReferenceOnResize(rect: Rect, fit: com.xnotes.core.infinite.ReferenceViewportFit): Boolean {
+        if (!fit.refitIfStillAutomatic(viewport, rect)) return false
+        onViewChanged()
+        view.publish()
+        return true
     }
 
     fun jumpTo(waypoint: Waypoint) {

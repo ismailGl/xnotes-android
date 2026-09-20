@@ -5,13 +5,16 @@ import com.xnotes.core.model.Rgba
 import com.xnotes.platform.QuestionProgress
 import com.xnotes.platform.QuestionResult
 
-/** Original-page review input. No answer-key producer exists yet, so unanswered results stay unknown. */
+/** Original-page review input; correctness is derived from choices and answer keys. */
 data class QuestionPageReview(val sourcePageIndex: Int, val overlays: List<QuestionResultOverlay>) {
     companion object {
-        fun create(page: Int, questions: List<Question>, progress: QuestionProgress) = QuestionPageReview(page,
-            questions.filter { it.sourcePageIndex == page }.map {
-                QuestionResultOverlay(it, progress.results[it.id] ?: QuestionResult.UNKNOWN)
+        fun create(page: Int, questions: List<Question>, progress: QuestionProgress): QuestionPageReview {
+            val onPage = questions.filter { it.sourcePageIndex == page }
+            val ids = onPage.map { it.id }
+            return QuestionPageReview(page, onPage.map {
+                QuestionResultOverlay(it, if (progress.showsResult(it.id, ids)) progress.resultFor(it.id) else QuestionResult.UNKNOWN)
             })
+        }
     }
 }
 

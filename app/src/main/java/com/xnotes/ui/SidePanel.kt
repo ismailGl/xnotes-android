@@ -80,6 +80,22 @@ fun SidePanel(
     onSavePagesAsImages: (indices: List<Int>) -> Unit = {},
 ) {
     val palette = LocalPalette.current
+    if (editor.viewOnlyDuplicate) {
+        var questions by remember { mutableStateOf(false) }
+        Column(Modifier.width(224.dp).fillMaxHeight().background(palette.panel.toComposeColor())) {
+            Row {
+                TextButton(onClick = { questions = false }) { Text("Pages") }
+                if (editor.questionOverlaySet != null) TextButton(onClick = { questions = true }) { Text("Questions") }
+            }
+            if (questions) editor.questionOverlaySet?.let { QuestionSidebar(editor, it) }
+            else LazyColumn {
+                itemsIndexed(editor.pagesSnapshot()) { index, _ ->
+                    TextButton(onClick = { editor.goToPage(index) }) { Text("Page ${index + 1}") }
+                }
+            }
+        }
+        return
+    }
     var tab by remember { mutableStateOf(0) }
     Column(
         Modifier
@@ -91,11 +107,13 @@ fun SidePanel(
             SegIcon(XnotesIcons.thumbnails, "Pages", tab == 0) { tab = 0 }
             SegIcon(XnotesIcons.contents, "Contents", tab == 1) { tab = 1 }
             SegIcon(XnotesIcons.bookmark, "Bookmarks", tab == 2) { tab = 2 }
+            if (editor.questionOverlaySet != null) SegIcon(XnotesIcons.view, "Questions", tab == 3) { tab = 3 }
         }
         Box(Modifier.fillMaxWidth().weight(1f)) {
             when (tab) {
                 0 -> PagesTab(editor, onSharePages, onSavePagesAsPdf, onSavePagesAsImages)
                 1 -> ContentsTab(editor)
+                3 -> editor.questionOverlaySet?.let { QuestionSidebar(editor, it) }
                 else -> BookmarksTab(editor)
             }
         }

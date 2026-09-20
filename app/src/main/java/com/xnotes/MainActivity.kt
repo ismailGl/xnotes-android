@@ -42,6 +42,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -57,6 +58,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.zIndex
 import androidx.compose.foundation.focusable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
@@ -248,6 +250,7 @@ private fun EditorScreen(
     // Backstage is the root of the stack; the editor is pushed on top only when a note is open
     // (editor.noteOpen). Every launch starts on backstage.
     var backstageView by remember { mutableStateOf(com.xnotes.ui.BackstageView.HOME) }
+    var browsingForSecond by remember { mutableStateOf(false) }
     var showShareChooser by remember { mutableStateOf(false) }
     var guardAction by remember { mutableStateOf<GuardRequest?>(null) }
     var pendingAfterSave by remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -498,7 +501,7 @@ private fun EditorScreen(
             if (!second.noteOpen) {
                 editor.abandonSecondary()
                 editor.message = "Could not open the second note."
-            }
+            } else editor.markSecondaryOpened()
         }
     }
 
@@ -701,16 +704,23 @@ private fun EditorScreen(
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }, contentWindowInsets = contentInsets) { inner ->
         Box(modifier = Modifier.fillMaxSize().padding(inner).consumeWindowInsets(contentInsets)) {
             // BASE LAYER: backstage is the root of the stack — always present underneath.
+            Box(Modifier.fillMaxSize().zIndex(if (browsingForSecond) 2f else 0f)) {
             com.xnotes.ui.Backstage(
                 editor = editor,
                 view = backstageView,
                 onSelectView = { backstageView = it },
-                onExitApp = { (context as? android.app.Activity)?.finish() },
+                onExitApp = { if (browsingForSecond) browsingForSecond = false else (context as? android.app.Activity)?.finish() },
                 onImportCodeTheme = { importCodeThemeLauncher.launch(arrayOf("*/*")) },
                 onImportFont = { importFontLauncher.launch(arrayOf("*/*")) },
                 onOpenSystem = { openLauncher.launch(arrayOf("*/*")) },
                 onImportPdf = { importPdfLauncher.launch(arrayOf("application/pdf")) },
-                onOpenFile = { uri -> guarded(editor) { openTreeFile(uri) } },
+                onOpenFile = { uri ->
+                    if (browsingForSecond) {
+                        val open = { browsingForSecond = false; editor.openSecondDocument(uri, displayNameOf(resolver, Uri.parse(uri))) }
+                        val second = editor.secondary
+                        if (second?.noteOpen == true) guarded(second, open) else open()
+                    } else guarded(editor) { openTreeFile(uri) }
+                },
                 onPickRoot = { pickRootLauncher.launch(null) },
                 onShareFile = { uri -> pendingShareUri = uri; showShareChooser = true },
                 onSaveCopyFile = { uri -> pendingSaveCopyUri = uri; saveCopyLauncher.launch("${stemOf(uri)}${kindOf(uri).suffix}") },
@@ -719,14 +729,21 @@ private fun EditorScreen(
                         render = { o, prog, cancel -> editor.exportFileToPdf(uri, o, prog, cancel) },
                         onReady = { temp -> pendingExportTemp = temp; savePdfLauncher.launch("${stemOf(uri)}.pdf") })
                 },
-                onOpenSplit = { first, second -> guardedAll { openSplit(first, second) } },
+                onOpenSplit = { first, second ->
+                    if (browsingForSecond) editor.message = "Select one notebook for the source pane."
+                    else guardedAll { openSplit(first, second) }
+                },
             )
+            if (browsingForSecond) IconButton(onClick = { browsingForSecond = false }, modifier = Modifier.align(Alignment.TopEnd)) {
+                Icon(XnotesIcons.close, "Return to documents")
+            }
+            }
 
             // TOP LAYER: the open panes (toolbar + canvas each), pushed over backstage. Back acts on
             // the focused pane; its handlers live here so — composed after backstage — they win while
             // a note is open.
             val focused = editor.active
-            if (focused.noteOpen && focused.questionSession == null) {
+            if (!browsingForSecond && focused.noteOpen && focused.questionSession == null) {
                 // While a text box is open, Back commits-or-dismisses it (and hides the keyboard).
                 BackHandler(enabled = focused.editingField != null) { focused.commitText() }
                 // A live flow caret session ends first (flushing its typing burst).
@@ -744,6 +761,7 @@ private fun EditorScreen(
                     guardedAll { editor.goHomeAll() }
                 },
                 onClosePane = { pane -> guarded(pane) { pane.goHome() } },
+                onOpenSecondDocument = { backstageView = com.xnotes.ui.BackstageView.HOME; browsingForSecond = true },
                 onInsertImage = { pane, at ->
                     pendingInsert = PendingInsert(pane, at)
                     insertImageLauncher.launch(arrayOf("image/*"))
@@ -761,7 +779,7 @@ private fun EditorScreen(
             if (focused.questionDetectionOpen) com.xnotes.ui.QuestionDetectionScreen(focused)
             SplitHost(editor, actions)
             if (questionSession != null && focused.noteOpen) {
-                BackHandler { if (questionSession.peek == com.xnotes.ui.QuestionPeek.FADED) questionSession.cyclePeek() else focused.closeQuestionMode() }
+                BackHandler(enabled = !browsingForSecond) { if (questionSession.peek == com.xnotes.ui.QuestionPeek.FADED) questionSession.cyclePeek() else focused.closeQuestionMode() }
                 com.xnotes.ui.QuestionModeScreen(focused, questionSession)
             }
         }
@@ -897,6 +915,7 @@ private data class PaneActions(
     val onOpenBackstage: () -> Unit,
     /** Close just this pane, leaving the other one to fill the window. */
     val onClosePane: (Editor) -> Unit,
+    val onOpenSecondDocument: () -> Unit,
     val onInsertImage: (Editor, com.xnotes.core.geometry.Pt?) -> Unit,
     val onInsertCanvasImage: (Editor, com.xnotes.core.geometry.Pt?) -> Unit,
     val onAddStickers: () -> Unit,
@@ -994,7 +1013,7 @@ private fun SplitHost(editor: Editor, actions: PaneActions) {
                 sideBySide = sideBySide,
                 extentPx = with(LocalDensity.current) { full.toPx() },
                 ratio = editor.splitRatio,
-                onRatio = { editor.splitRatio = it },
+                onRatio = editor::resizeSplit,
                 modifier = paneOffset((firstExtent - DIVIDER / 2).coerceAtLeast(0.dp))
                     .then(paneSize(DIVIDER)),
             )
@@ -1021,6 +1040,9 @@ private fun EditorPane(
     val palette = LocalPalette.current
     val focusRequester = remember { FocusRequester() }
     val focused = app.active === editor
+    LaunchedEffect(editor.state.document, editor.noteOpen, editor.questionRevision) {
+        if (editor.noteOpen && editor.state.document.hasPdf && !editor.isQuestionPeek) editor.refreshQuestionOverlays()
+    }
     // This pane owns the keyboard while it is the focused one; (re)grab it as that changes.
     LaunchedEffect(focused, editor.noteOpen) {
         if (focused && editor.noteOpen) runCatching { focusRequester.requestFocus() }
@@ -1055,14 +1077,22 @@ private fun EditorPane(
             )
         }
         val question = editor.questionSession
+        val compactQuestion = question != null && app.inSplit && editor.pane == com.xnotes.ui.Pane.PRIMARY
         if (question?.peek == com.xnotes.ui.QuestionPeek.FADED) {
             val peek = editor.questionPeekEditor
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                if (peek != null) EditorPane(peek, peek,
-                    actions.copy(onOpenBackstage = question::cyclePeek), false, Modifier.fillMaxSize())
-                if (question.loadingView) androidx.compose.material3.CircularProgressIndicator(Modifier.align(Alignment.Center))
+            Row(Modifier.weight(1f).fillMaxWidth()) {
+                if (question.sidebarVisible && !compactQuestion) com.xnotes.ui.QuestionSidebar(editor, question.set, question)
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    if (peek != null) EditorPane(peek, peek,
+                        actions.copy(onOpenBackstage = question::cyclePeek), false, Modifier.fillMaxSize())
+                    if (question.loadingView) androidx.compose.material3.CircularProgressIndicator(Modifier.align(Alignment.Center))
+                    if (question.sidebarVisible && compactQuestion) com.xnotes.ui.QuestionSidebar(editor, question.set, question,
+                        dismissOnSelect = true)
+                }
             }
-            com.xnotes.ui.QuestionBottomBar(editor, question)
+            com.xnotes.ui.QuestionBottomBar(editor, question,
+                compact = app.inSplit && editor.pane == com.xnotes.ui.Pane.PRIMARY,
+                onOpenSecondDocument = actions.onOpenSecondDocument)
         } else if (editor.canvasOpen || question != null) {
             val canvas = editor.infinite
             com.xnotes.ui.InfiniteToolbar(
@@ -1072,7 +1102,9 @@ private fun EditorPane(
                 onClosePane = onClose,
                 onToggleFullscreen = actions.onToggleFullscreen,
             )
-            Box(modifier = Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
+            Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                if (question?.sidebarVisible == true && !compactQuestion) com.xnotes.ui.QuestionSidebar(editor, question.set, question)
+            Box(modifier = Modifier.weight(1f).fillMaxHeight().clipToBounds()) {
                 AndroidView(
                     factory = { detached(canvas.surfaces) },
                     modifier = Modifier.fillMaxSize(),
@@ -1084,8 +1116,13 @@ private fun EditorPane(
                 if (question?.busy == true) Box(Modifier.fillMaxSize().then(SwallowTouches), contentAlignment = Alignment.Center) {
                     androidx.compose.material3.CircularProgressIndicator()
                 }
+                if (question?.sidebarVisible == true && compactQuestion) com.xnotes.ui.QuestionSidebar(editor, question.set, question,
+                    dismissOnSelect = true)
             }
-            if (question != null) com.xnotes.ui.QuestionBottomBar(editor, question)
+            }
+            if (question != null) com.xnotes.ui.QuestionBottomBar(editor, question,
+                compact = app.inSplit && editor.pane == com.xnotes.ui.Pane.PRIMARY,
+                onOpenSecondDocument = actions.onOpenSecondDocument)
         } else {
             Toolbar(
                 editor,
@@ -1093,6 +1130,7 @@ private fun EditorPane(
                 onOpenBackstage = { if (editor.questionSession != null) editor.closeQuestionMode() else actions.onOpenBackstage() },
                 onInsertImage = { actions.onInsertImage(editor, null) },
                 onAddStickers = actions.onAddStickers,
+                onOpenSecondDocument = actions.onOpenSecondDocument,
                 onClosePane = onClose,
             )
             Row(modifier = Modifier.weight(1f).fillMaxWidth()) {

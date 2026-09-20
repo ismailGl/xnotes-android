@@ -84,6 +84,20 @@ class QuestionSetRepository(private val storage: QuestionFiles) {
         }
     }
 
+    /** Reorder existing JSON objects, retaining stable IDs and unknown future metadata. */
+    fun reorder(notebookUri: String, pdf: File, ids: List<String>) {
+        val (id, hash) = sourceIdentity(notebookUri, pdf)
+        synchronized(writeLock) {
+            val root = JSONObject(requireNotNull(storage.read("$id.json")).decodeToString())
+            require(root.getString("sourceNotebookUri") == notebookUri && root.getString("sourcePdfSha256") == hash)
+            val items = root.getJSONArray("questions")
+            val byId = (0 until items.length()).map { items.getJSONObject(it) }.associateBy { it.getString("id") }
+            require(ids.size == items.length() && ids.toSet() == byId.keys)
+            root.put("questions", JSONArray(ids.map { byId.getValue(it) }))
+            storage.write("$id.json") { it.write(root.toString().toByteArray()) }
+        }
+    }
+
     /** Journal first, then idempotent cleanup. Reopening finishes an interrupted deletion. */
     fun deleteQuestion(notebookUri: String, pdf: File, questionId: String) {
         require(questionId.matches(Regex("[A-Za-z0-9_-]{1,128}")))
@@ -110,6 +124,9 @@ class QuestionSetRepository(private val storage: QuestionFiles) {
             }
             state.optJSONArray("completed")?.let { completed ->
                 state.put("completed", JSONArray((0 until completed.length()).map { completed.getString(it) }.filterNot { it in ids }))
+            }
+            state.optJSONArray("revealed")?.let { revealed ->
+                state.put("revealed", JSONArray((0 until revealed.length()).map { revealed.getString(it) }.filterNot { it in ids }))
             }
             if (state.optString("lastQuestionId") in ids) state.put("lastQuestionId", JSONObject.NULL)
             storage.write("$setId/state.json") { it.write(state.toString().toByteArray()) }

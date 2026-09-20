@@ -105,4 +105,56 @@ class QuestionProgressSessionTest {
             assertNull(session.progressError)
         } finally { work.cancel() }
     }
+    @Test fun keyEditingPreservesSelectionAndFeedbackControlsRevelation() = runBlocking {
+        val store = Store()
+        val work = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            val session = QuestionSession(entries(), File("pdf"), scope = work, progressStore = store)
+            session.selectChoice("B")
+            session.setCorrectChoice("A")
+            assertEquals("B", session.selectedChoice)
+            assertNull(session.visibleResult)
+            session.setFeedback(QuestionFeedback.IMMEDIATE)
+            assertEquals(QuestionResult.INCORRECT, session.visibleResult)
+            session.selectChoice("A")
+            assertEquals(QuestionResult.CORRECT, session.visibleResult)
+            session.selectChoice("C")
+            assertEquals(QuestionResult.INCORRECT, session.visibleResult)
+            session.setFeedback(QuestionFeedback.MANUAL)
+            assertNull(session.visibleResult)
+            session.revealPage()
+            assertEquals(QuestionResult.INCORRECT, session.visibleResult)
+            session.setCorrectChoice(null)
+            assertEquals(QuestionResult.UNKNOWN, session.visibleResult)
+            until { store.state.answerKeys.isEmpty() && store.state.choices["a"] == "C" }
+        } finally { work.cancel() }
+    }
+    @Test fun bulkKeyUsesVisibleOrderButSavesStableIdsAndKeepsUnspecifiedKeys() = runBlocking {
+        val store = Store().apply { state = QuestionProgress(answerKeys = mapOf("c" to "E")) }
+        val work = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            val session = QuestionSession(entries(listOf("b", "a", "c")), File("pdf"), scope = work,
+                progressStore = store, initialProgress = store.load())
+            val preview = session.applyBulkKey("d, a")
+            assertEquals(2, preview.count)
+            until { store.state.answerKeys["a"] == "A" }
+            assertEquals(mapOf("b" to "D", "a" to "A", "c" to "E"), store.state.answerKeys)
+        } finally { work.cancel() }
+    }
+    @Test fun deletingSelectedNonCurrentOverlayRemovesOnlyThatStableId() = runBlocking {
+        val store = Store().apply { state = QuestionProgress(choices = mapOf("a" to "A", "b" to "B"),
+            answerKeys = mapOf("a" to "C", "b" to "D")) }
+        val work = CoroutineScope(coroutineContext + SupervisorJob())
+        val deleted = mutableListOf<String>()
+        try {
+            val session = QuestionSession(entries(), File("pdf"), scope = work, progressStore = store,
+                initialProgress = store.load(), beforeTransition = {}, onNavigate = {}, onDelete = { deleted += it })
+            session.requestDelete("b")
+            session.deleteCurrent()
+            until { deleted == listOf("b") && session.set.entries.size == 2 && store.state.answerKeys["b"] == null }
+            assertEquals(listOf("a", "c"), session.set.entries.map { it.question?.id })
+            assertEquals("C", store.state.answerKeys["a"])
+            assertNull(store.state.answerKeys["b"])
+        } finally { work.cancel() }
+    }
 }

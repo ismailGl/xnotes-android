@@ -37,6 +37,7 @@ class QuestionDetectionSession(
     private val localPlans = mutableMapOf<Int, LocalVerificationPlan>()
     private var originalProposals = emptyMap<Int, List<DetectedQuestion>>()
     private val explicitlyRejected = mutableSetOf<String>()
+    private val deleted = mutableSetOf<String>()
     private val manuallyTouched = mutableSetOf<Int>()
     private var reviewPage: Int? = null
     private var verification: VerificationQueue? = null
@@ -65,7 +66,7 @@ class QuestionDetectionSession(
         if (busy || saving) return
         val original = originalProposals[page] ?: return
         protect(page)
-        proposals = proposals.filterNot { it.sourcePageIndex == page } + original.map { it.copy(accepted = false) }
+        proposals = proposals.filterNot { it.sourcePageIndex == page } + original.filterNot { it.id in deleted }.map { it.copy(accepted = false) }
         status = "${proposals.size} proposals · review before adding"
         aiStatuses = aiStatuses + (page to "Detector proposals restored · review before accepting")
     }
@@ -87,7 +88,7 @@ class QuestionDetectionSession(
             { page -> proposals.filter { it.sourcePageIndex == page } },
             { page, repaired ->
                 if (stillCurrent() && !busy && !saving && page !in manuallyTouched) {
-                    proposals = proposals.filterNot { it.sourcePageIndex == page } + repaired
+                    proposals = proposals.filterNot { it.sourcePageIndex == page } + repaired.filterNot { it.id in deleted }
                     status = "${proposals.size} proposals · review before adding"
                     if (repaired.isNotEmpty()) errors = errors.filterNot { it.startsWith("Page ${page + 1}: no numbered questions") }
                 }
@@ -103,7 +104,7 @@ class QuestionDetectionSession(
         val targets = requested.distinct().sorted()
         if (targets.isEmpty() || targets.any { it !in availablePages }) { status = "Choose PDF-backed pages from this notebook"; return }
         verification?.close(); verification = null
-        explicitlyRejected.clear(); manuallyTouched.clear(); originalProposals = emptyMap(); aiStatuses = emptyMap(); aiDiagnostics = emptyMap()
+        explicitlyRejected.clear(); deleted.clear(); manuallyTouched.clear(); originalProposals = emptyMap(); aiStatuses = emptyMap(); aiDiagnostics = emptyMap()
         localPlans.clear()
         pageDiagnostics = emptyMap()
         pageSources = emptyMap()
@@ -168,6 +169,15 @@ class QuestionDetectionSession(
             if (value) explicitlyRejected.remove(id) else explicitlyRejected.add(id)
             proposals = proposals.map { if (it.id == id) it.copy(accepted = value) else it }
         }
+    }
+    fun delete(id: String) {
+        if (busy || saving) return
+        val proposal = proposals.firstOrNull { it.id == id } ?: return
+        protect(proposal.sourcePageIndex)
+        deleted += id
+        explicitlyRejected -= id
+        proposals = proposals.filterNot { it.id == id }
+        status = "${proposals.size} proposals · review before adding"
     }
     fun acceptAll() { if (!busy && !saving) {
         pages.forEach { protect(it) }

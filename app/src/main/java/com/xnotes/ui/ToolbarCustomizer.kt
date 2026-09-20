@@ -434,6 +434,8 @@ private fun itemIcon(item: ToolbarItem): ImageVector = when (item) {
     ToolbarItem.QUESTION_PEEK -> XnotesIcons.view
     ToolbarItem.QUESTION_CROP -> XnotesIcons.scissors
     ToolbarItem.QUESTION_DELETE -> XnotesIcons.scissors
+    ToolbarItem.QUESTION_OVERLAY -> XnotesIcons.view
+    ToolbarItem.DUPLICATE_VIEW -> XnotesIcons.split
     ToolbarItem.HOME -> XnotesIcons.home
     ToolbarItem.TITLE -> XnotesIcons.edit
     ToolbarItem.SIDEBAR -> XnotesIcons.sidebar

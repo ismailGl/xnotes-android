@@ -11,6 +11,19 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
 class QuestionDetectionSessionTest {
+    @Test fun deletedProposalNeverReturnsThroughAcceptAllOrRestore() = runBlocking {
+        val work = CoroutineScope(coroutineContext + SupervisorJob())
+        try {
+            val session = QuestionDetectionSession(temp.newFile(), "uri", "Title", listOf(0),
+                QuestionSetRepository(temp.newFolder()), work, { true }, { Reader() })
+            session.scan(listOf(0)); until { !session.busy }
+            val id = session.proposals.single().id
+            session.delete(id)
+            session.acceptAll()
+            session.revertAi(0)
+            assertTrue(session.proposals.none { it.id == id })
+        } finally { work.cancel() }
+    }
     @get:Rule val temp=TemporaryFolder()
     private suspend fun until(check: () -> Boolean) = withTimeout(5000) { while(!check()) delay(5) }
     private class Reader : QuestionPageReader {

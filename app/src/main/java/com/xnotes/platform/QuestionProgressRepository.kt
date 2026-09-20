@@ -19,9 +19,20 @@ data class QuestionAnswerOptions(val type: QuestionType = QuestionType.SINGLE_CH
 data class QuestionProgress(val lastQuestionId: String? = null, val choices: Map<String, String> = emptyMap(),
     val answerOptions: Map<String, QuestionAnswerOptions> = emptyMap(),
     val feedback: QuestionFeedback = QuestionFeedback.MANUAL,
-    val results: Map<String, QuestionResult> = emptyMap(),
-    val completed: Set<String> = emptySet()) {
+    val completed: Set<String> = emptySet(),
+    val answerKeys: Map<String, String> = emptyMap(),
+    val revealed: Set<String> = emptySet()) {
     fun optionsFor(id: String) = answerOptions[id] ?: QuestionAnswerOptions()
+    fun resultFor(id: String): QuestionResult = when {
+        choices[id] == null || answerKeys[id] == null -> QuestionResult.UNKNOWN
+        choices[id] == answerKeys[id] -> QuestionResult.CORRECT
+        else -> QuestionResult.INCORRECT
+    }
+    fun showsResult(id: String, pageIds: Collection<String>): Boolean = when (feedback) {
+        QuestionFeedback.IMMEDIATE -> true
+        QuestionFeedback.ON_COMPLETION -> pageIds.all { it in completed || it in choices }
+        QuestionFeedback.MANUAL -> id in revealed
+    }
 }
 
 interface QuestionProgressStore {
@@ -43,6 +54,7 @@ class QuestionProgressRepository(private val storage: QuestionFiles, setId: Stri
     companion object {
         fun encode(progress: QuestionProgress): String {
             require(progress.choices.all { (id, choice) -> choice in progress.optionsFor(id).choices })
+            require(progress.answerKeys.all { (id, choice) -> choice in progress.optionsFor(id).choices })
             val options = JSONObject()
             progress.answerOptions.forEach { (id, value) ->
                 options.put(id, JSONObject().put("type", value.type.name).put("optionCount", value.optionCount))
@@ -50,13 +62,15 @@ class QuestionProgressRepository(private val storage: QuestionFiles, setId: Stri
             return JSONObject().put("version", 1).put("lastQuestionId", progress.lastQuestionId ?: JSONObject.NULL)
                 .put("completed", org.json.JSONArray(progress.completed.toList()))
                 .put("feedback", progress.feedback.name)
-                .put("results", JSONObject(progress.results.mapValues { it.value.name }))
+                .put("answerKeys", JSONObject(progress.answerKeys))
+                .put("revealed", org.json.JSONArray(progress.revealed.toList()))
                 .put("choices", JSONObject(progress.choices)).put("answerOptions", options).toString()
         }
         fun decode(json: String): QuestionProgress {
             val root = JSONObject(json)
             require(root.getInt("version") == 1)
             val choices = root.optJSONObject("choices") ?: JSONObject()
+            val keys = root.optJSONObject("answerKeys") ?: JSONObject()
             val optionsJson = root.optJSONObject("answerOptions") ?: JSONObject()
             val options = optionsJson.keys().asSequence().mapNotNull { id ->
                 val value = optionsJson.optJSONObject(id) ?: return@mapNotNull null
@@ -70,10 +84,11 @@ class QuestionProgressRepository(private val storage: QuestionFiles, setId: Stri
                     choices.optString(id).takeIf { it in (options[id] ?: QuestionAnswerOptions()).choices }?.let { id to it }
                 }.toMap(), options,
                 QuestionFeedback.entries.firstOrNull { it.name == root.optString("feedback") } ?: QuestionFeedback.MANUAL,
-                (root.optJSONObject("results") ?: JSONObject()).let { results -> results.keys().asSequence().mapNotNull { id ->
-                    QuestionResult.entries.firstOrNull { it.name == results.optString(id) }?.let { id to it }
-                }.toMap() },
-                root.optJSONArray("completed")?.let { ids -> (0 until ids.length()).map { ids.getString(it) }.toSet() } ?: emptySet())
+                root.optJSONArray("completed")?.let { ids -> (0 until ids.length()).map { ids.getString(it) }.toSet() } ?: emptySet(),
+                keys.keys().asSequence().mapNotNull { id ->
+                    keys.optString(id).takeIf { it in (options[id] ?: QuestionAnswerOptions()).choices }?.let { id to it }
+                }.toMap(),
+                root.optJSONArray("revealed")?.let { ids -> (0 until ids.length()).map { ids.getString(it) }.toSet() } ?: emptySet())
         }
     }
 }

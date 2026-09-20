@@ -931,7 +931,7 @@ class CanvasState(
      * [zoomLocked]: when the usable space changes, staying fit matters more than holding the
      * exact zoom number.
      */
-    fun reflowFitWidthForResize() {
+    fun reflowFitWidthForResize(previousCenterY: Double? = null) {
         if (contentW <= 0.0 || viewportW == 0) return
         if (fitHeightActive && !verticalScroll) {
             val fit = fitHeightZoom()
@@ -944,7 +944,7 @@ class CanvasState(
         if (!fitWidthActive) return
         // Keep the content under the viewport's vertical centre put (don't jump to the page top) and
         // re-centre horizontally; only the width-driven zoom changes.
-        val centerContentY = viewportToContent(Pt(viewportW / 2.0, viewportH / 2.0)).y
+        val centerContentY = previousCenterY ?: viewportToContent(Pt(viewportW / 2.0, viewportH / 2.0)).y
         zoom = fitWidthZoom()
         scrollX = 0.0
         scrollY = centerContentY * zoom - viewportH / 2.0

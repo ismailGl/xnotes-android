@@ -54,4 +54,31 @@ class QuestionProgressRepositoryTest {
         try { QuestionProgressRepository(root, "set").load(); fail() } catch (_: Exception) { }
         assertEquals("bad", file.readText())
     }
+    @Test fun answersAndFeedbackAreDerivedAcrossChangesAndLegacyData() {
+        val base = QuestionProgress(choices = mapOf("a" to "B", "missing" to "A"), answerKeys = mapOf("a" to "A"))
+        assertEquals(QuestionResult.INCORRECT, base.resultFor("a"))
+        assertEquals(QuestionResult.UNKNOWN, base.resultFor("missing"))
+        assertEquals(QuestionResult.UNKNOWN, base.resultFor("unanswered"))
+        assertEquals(QuestionResult.CORRECT, base.copy(choices = base.choices + ("a" to "A")).resultFor("a"))
+        assertEquals(QuestionResult.INCORRECT, base.copy(choices = base.choices + ("a" to "C")).resultFor("a"))
+        assertEquals(QuestionResult.UNKNOWN, base.copy(choices = base.choices - "a").resultFor("a"))
+        assertTrue(base.copy(feedback = QuestionFeedback.IMMEDIATE).showsResult("a", listOf("a", "b")))
+        assertFalse(base.copy(feedback = QuestionFeedback.ON_COMPLETION).showsResult("a", listOf("a", "b")))
+        assertTrue(base.copy(feedback = QuestionFeedback.ON_COMPLETION, completed = setOf("b")).showsResult("a", listOf("a", "b")))
+        assertFalse(base.showsResult("a", listOf("a")))
+        assertTrue(base.copy(revealed = setOf("a")).showsResult("a", listOf("a")))
+        val legacy = QuestionProgressRepository.decode("""{"version":1,"choices":{"a":"A"},"results":{"a":"INCORRECT"}}""")
+        assertEquals(QuestionResult.UNKNOWN, legacy.resultFor("a"))
+        assertTrue(legacy.answerKeys.isEmpty())
+    }
+    @Test fun answerKeysAndModesRoundTripInFolderState() = runBlocking {
+        val root = temp.newFolder()
+        val state = QuestionProgress("q", mapOf("q" to "D"), feedback = QuestionFeedback.ON_COMPLETION,
+            completed = setOf("q"), answerKeys = mapOf("q" to "D"), revealed = setOf("q"))
+        QuestionProgressRepository(root, "set").save(state)
+        val restored = QuestionProgressRepository(root, "set").load()
+        assertEquals(state, restored)
+        assertEquals(QuestionResult.CORRECT, restored.resultFor("q"))
+        assertEquals("D", org.json.JSONObject(java.io.File(root, "set/state.json").readText()).getJSONObject("answerKeys").getString("q"))
+    }
 }

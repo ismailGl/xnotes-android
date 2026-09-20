@@ -15,6 +15,8 @@ enum class ToolbarItem(val id: String, val label: String) {
     QUESTION_PEEK("question_peek", "Question page peek"),
     QUESTION_CROP("question_crop", "Edit question crop"),
     QUESTION_DELETE("question_delete", "Delete question"),
+    QUESTION_OVERLAY("question_overlay", "Question overlays"),
+    DUPLICATE_VIEW("duplicate_view", "Open second view"),
     HOME("home", "Home"),
     TITLE("title", "Title"),
     SIDEBAR("sidebar", "Sidebar"),
@@ -155,6 +157,8 @@ data class ToolbarLayout(val sections: List<ToolbarSection>) {
             ToolbarItem.QUESTION_PEEK to ToolbarItem.QUESTION_ANSWER,
             ToolbarItem.QUESTION_CROP to ToolbarItem.QUESTION_PEEK,
             ToolbarItem.QUESTION_DELETE to ToolbarItem.QUESTION_CROP,
+            ToolbarItem.QUESTION_OVERLAY to ToolbarItem.SIDEBAR,
+            ToolbarItem.DUPLICATE_VIEW to ToolbarItem.QUESTION_OVERLAY,
             ToolbarItem.TEXT_BOX to ToolbarItem.TEXT,
             ToolbarItem.VIEW to ToolbarItem.STYLES,
             ToolbarItem.MARGINS to ToolbarItem.STYLES,
@@ -186,7 +190,7 @@ data class ToolbarLayout(val sections: List<ToolbarSection>) {
         val DEFAULT: ToolbarLayout = of(
             listOf(ToolbarItem.QUESTION_NAV, ToolbarItem.QUESTION_ANSWER, ToolbarItem.QUESTION_PEEK, ToolbarItem.QUESTION_CROP, ToolbarItem.QUESTION_DELETE),
             listOf(ToolbarItem.HOME, ToolbarItem.TITLE),
-            listOf(ToolbarItem.SIDEBAR),
+            listOf(ToolbarItem.SIDEBAR, ToolbarItem.QUESTION_OVERLAY, ToolbarItem.DUPLICATE_VIEW),
             listOf(
                 ToolbarItem.PEN, ToolbarItem.DASHED, ToolbarItem.CALLIGRAPHY, ToolbarItem.SPEED,
                 ToolbarItem.TAPER, ToolbarItem.HIGHLIGHTER, ToolbarItem.ERASER,

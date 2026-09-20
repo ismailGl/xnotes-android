@@ -8,6 +8,24 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
 class QuestionSetRepositoryTest {
+    @Test fun reorderPreservesIdsCropsProgressAndUnknownMetadata() = kotlinx.coroutines.runBlocking {
+        val dir = temp.newFolder(); val pdf = temp.newFile().apply { writeText("pdf") }
+        val repo = QuestionSetRepository(dir)
+        val a = question("a")
+        val b = Question("b", 5, NormalizedRect(.2,.3,.6,.7))
+        val set = repo.appendBatch("uri", "Title", pdf, listOf(a,b))
+        val state = QuestionProgress(choices = mapOf("a" to "B", "b" to "C"),
+            answerKeys = mapOf("a" to "A", "b" to "C"), completed = setOf("b"))
+        QuestionProgressRepository(dir, set.id).save(state)
+        val file = java.io.File(dir, "${set.id}.json")
+        val json = org.json.JSONObject(file.readText())
+        json.getJSONArray("questions").getJSONObject(0).put("futureField", 17)
+        file.writeText(json.toString())
+        repo.reorder("uri", pdf, listOf("b", "a"))
+        assertEquals(listOf(b,a), repo.find("uri", pdf)!!.entries.map { it.question })
+        assertEquals(17, org.json.JSONObject(file.readText()).getJSONArray("questions").getJSONObject(1).getInt("futureField"))
+        assertEquals(state, QuestionProgressRepository(dir, set.id).load())
+    }
     @Test fun batchSkipsGeometricDuplicatesAndPreservesExistingIdsAndSidecars() {
         val dir=temp.newFolder(); val pdf=temp.newFile().apply { writeText("pdf") }
         val repo=QuestionSetRepository(dir)

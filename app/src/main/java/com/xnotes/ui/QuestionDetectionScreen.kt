@@ -98,6 +98,8 @@ fun QuestionDetectionScreen(editor: Editor) {
                     TextButton(onClick = { edit = true; add = true; selected = null; page?.let(session::beginManualReview) }, enabled = page != null && !session.busy && !session.saving) { Text(if (add) "Draw a rectangle…" else "Add rectangle") }
                     TextButton(onClick = { selected?.let { session.accept(it, true) } }, enabled = proposal != null && !session.busy && !session.saving) { Text("Accept") }
                     TextButton(onClick = { selected?.let { session.accept(it, false) } }, enabled = proposal != null && !session.busy && !session.saving) { Text("Reject") }
+                    TextButton(onClick = { selected?.let(session::delete); selected = null },
+                        enabled = proposal != null && !session.busy && !session.saving) { Text("Delete proposal") }
                     TextButton(onClick = session::acceptAll, enabled = !session.busy && !session.saving) { Text("Accept All") }
                     Button(onClick = { session.commit { message -> editor.message = message; editor.questionRevision++; editor.closeQuestionDetection() } },
                         enabled = session.proposals.any { it.accepted } && !session.busy && !session.saving) { Text("Add accepted (${session.proposals.count { it.accepted }})") }
@@ -164,7 +166,8 @@ private fun DetectionPreview(session: QuestionDetectionSession, page: Int, selec
 @Composable
 internal fun PdfCropReview(pdf: File, proposals: List<DetectedQuestion>, page: Int, selected: String?,
     edit: Boolean, add: Boolean = false, select: (String?) -> Unit = {},
-    edited: (String, NormalizedRect) -> Unit, added: (NormalizedRect) -> Unit = {}) {
+    edited: (String, NormalizedRect) -> Unit, added: (NormalizedRect) -> Unit = {},
+    results: Map<String, com.xnotes.platform.QuestionResult>? = null) {
     val context = LocalContext.current
     val renderer = remember(pdf, page) { QuestionPdfRenderer(context, pdf) }
     val question = remember(page) { Question("preview", page, NormalizedRect(0.0, 0.0, 1.0, 1.0)) }
@@ -240,9 +243,26 @@ internal fun PdfCropReview(pdf: File, proposals: List<DetectedQuestion>, page: I
                 (items.map { it.crop to it } + listOfNotNull(draft?.let { it to null })).forEach { (r,p) ->
                     val x=(transform.left+r.left*size.first*transform.scale).toFloat(); val y=(transform.top+r.top*size.second*transform.scale).toFloat()
                     val rw=((r.right-r.left)*size.first*transform.scale).toFloat(); val rh=((r.bottom-r.top)*size.second*transform.scale).toFloat()
-                    drawRect(if (p?.id == selected || p == null) Color.Blue else if(p.accepted) Color(0xFF16813C) else Color(0xFFCE6500), Offset(x,y), androidx.compose.ui.geometry.Size(rw,rh), style=Stroke(3f))
+                    val result = p?.id?.let { results?.get(it) }
+                    val overlayColor = when (result) {
+                        com.xnotes.platform.QuestionResult.CORRECT -> Color(0xFF16813C)
+                        com.xnotes.platform.QuestionResult.INCORRECT -> Color(0xFFCE2828)
+                        else -> Color.Gray
+                    }
+                    drawRect(if (results != null) overlayColor else if (p?.id == selected || p == null) Color.Blue else if(p.accepted) Color(0xFF16813C) else Color(0xFFCE6500), Offset(x,y), androidx.compose.ui.geometry.Size(rw,rh), style=Stroke(3f))
                     if(p?.id == selected) listOf(Offset(x,y),Offset(x+rw,y),Offset(x+rw,y+rh),Offset(x,y+rh)).forEach { drawCircle(Color.Blue,8f,it) }
-                    if(p != null) drawIntoCanvas { it.nativeCanvas.drawText("${items.indexOf(p)+1}",x+6,y+28,label) }
+                    if(p != null) drawIntoCanvas {
+                        label.color = if (results == null) android.graphics.Color.BLUE else when (result) {
+                            com.xnotes.platform.QuestionResult.CORRECT -> android.graphics.Color.rgb(22,129,60)
+                            com.xnotes.platform.QuestionResult.INCORRECT -> android.graphics.Color.rgb(206,40,40)
+                            else -> android.graphics.Color.GRAY
+                        }
+                        it.nativeCanvas.drawText(if (results == null) "${items.indexOf(p)+1}" else when (result) {
+                            com.xnotes.platform.QuestionResult.CORRECT -> "✓"
+                            com.xnotes.platform.QuestionResult.INCORRECT -> "✕"
+                            else -> "${items.indexOf(p)+1}"
+                        }, x+6, y+28, label)
+                    }
                 }
             }
         }

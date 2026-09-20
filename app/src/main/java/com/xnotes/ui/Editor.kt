@@ -456,6 +456,181 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         private set
     var questionDetectionOpen by mutableStateOf(false)
     var questionRevision by mutableStateOf(0)
+    var viewOnlyDuplicate by mutableStateOf(false)
+        private set
+    var questionOverlaySet by mutableStateOf<com.xnotes.platform.QuestionSetRepository.LoadedSet?>(null)
+        private set
+    var questionOverlaysEnabled by mutableStateOf(false)
+    var questionOverlayEditing by mutableStateOf(false)
+    var selectedQuestionOverlayId by mutableStateOf<String?>(null)
+    var overlayTargetSession: QuestionSession? = null
+    var overlayOwner: Editor? = null
+    private var questionSourceEditor: Editor? = null
+    private var questionReferenceOnly = false
+    private var routingSourceQuestion = false
+    private var overlayPress: android.view.MotionEvent? = null
+    private var overlayQuestion: com.xnotes.core.model.Question? = null
+    private var overlayStart: com.xnotes.core.geometry.Pt? = null
+    private var overlayCorner = -1
+    private var overlayDraft: com.xnotes.core.model.NormalizedRect? = null
+
+    suspend fun refreshQuestionOverlays() {
+        val doc = state.document
+        val set = runCatching { findQuestions(doc) }.getOrNull()
+        if (state.document === doc) { questionOverlaySet = set; view.requestRender() }
+    }
+    fun toggleQuestionOverlays() {
+        if (overlayOwner != null) { overlayOwner!!.toggleQuestionOverlays(); return }
+        questionOverlaysEnabled = !questionOverlaysEnabled
+        if (!questionOverlaysEnabled) { questionOverlayEditing = false; selectedQuestionOverlayId = null }
+        view.requestRender()
+        questionPeekEditor?.let { it.questionOverlaysEnabled = questionOverlaysEnabled; it.questionOverlayEditing = questionOverlayEditing; it.view.requestRender() }
+    }
+    fun toggleQuestionOverlayEditing() {
+        if (overlayOwner != null) { overlayOwner!!.toggleQuestionOverlayEditing(); return }
+        if (viewOnlyDuplicate) return
+        questionOverlayEditing = !questionOverlayEditing
+        if (!questionOverlayEditing) selectedQuestionOverlayId = null
+        view.requestRender()
+        questionPeekEditor?.let { it.questionOverlayEditing = questionOverlayEditing; it.view.requestRender() }
+    }
+    fun deleteSelectedQuestionOverlay() {
+        if (viewOnlyDuplicate) return
+        if (overlayOwner != null) { overlayOwner!!.selectedQuestionOverlayId = selectedQuestionOverlayId; overlayOwner!!.deleteSelectedQuestionOverlay(); return }
+        val id = selectedQuestionOverlayId ?: return
+        val doc = state.document
+        val uri = doc.path ?: return
+        val pdf = doc.pdfFile ?: return
+        autosaveScope.launch {
+            try {
+                withContext(Dispatchers.IO) { questionRepository().deleteQuestion(uri, pdf, id) }
+                if (state.document === doc) { selectedQuestionOverlayId = null; questionRevision++; refreshQuestionOverlays() }
+            } catch (_: Exception) { message = "Could not delete this question" }
+        }
+    }
+    private fun saveQuestionOverlayCrop(id: String, crop: com.xnotes.core.model.NormalizedRect) {
+        if (viewOnlyDuplicate) return
+        val doc = state.document; val uri = doc.path ?: return; val pdf = doc.pdfFile ?: return
+        autosaveScope.launch {
+            try {
+                val updated = withContext(Dispatchers.IO) { questionRepository().updateCrop(uri, pdf, id, crop) }
+                if (state.document === doc) {
+                    questionOverlaySet = questionOverlaySet?.copy(entries = questionOverlaySet!!.entries.map {
+                        if (it.question?.id == id) it.copy(question = updated) else it
+                    })
+                    questionSession?.replaceCrop(updated)
+                    questionWorkspace?.updateCrop(updated)
+                    questionRevision++; view.requestRender()
+                }
+            } catch (_: Exception) { message = "Could not save question crop" }
+        }
+    }
+
+    private fun overlayPoint(x: Float, y: Float): Pair<Int, com.xnotes.core.geometry.Pt>? {
+        val content = state.viewportToContent(com.xnotes.core.geometry.Pt(x.toDouble(), y.toDouble()))
+        val index = state.pageIndexAtContent(content) ?: return null
+        val page = state.document.pages.getOrNull(index) ?: return null
+        val pdfPage = page.pdfPage ?: return null
+        val local = state.toPageSpace(index, content)
+        return pdfPage to com.xnotes.core.geometry.Pt(local.x / page.width, local.y / page.height)
+    }
+    private fun overlayHit(x: Float, y: Float): com.xnotes.core.model.Question? {
+        val (page, point) = overlayPoint(x, y) ?: return null
+        return QuestionOverlayGeometry.hit(questionOverlaySet?.entries?.mapNotNull { it.question }.orEmpty(), page, point.x, point.y)
+    }
+    private fun overlayTouch(ev: android.view.MotionEvent): Boolean {
+        if (!questionOverlaysEnabled || questionOverlaySet == null) return false
+        when (ev.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                val hit = overlayHit(ev.x, ev.y)
+                if (!QuestionOverlayGeometry.capturesDown(questionOverlaysEnabled, questionOverlayEditing,
+                    hit != null, ev.getToolType(0) == android.view.MotionEvent.TOOL_TYPE_STYLUS)) return false
+                val selected = requireNotNull(hit)
+                overlayPress?.recycle()
+                overlayPress = android.view.MotionEvent.obtain(ev)
+                overlayQuestion = selected
+                overlayStart = overlayPoint(ev.x, ev.y)?.second
+                overlayCorner = if (questionOverlayEditing) overlayStart?.let { p ->
+                    val page = state.document.pages.firstOrNull { it.pdfPage == selected.sourcePageIndex }
+                    QuestionOverlayGeometry.corner(selected.crop, p.x, p.y,
+                        24.0 / ((page?.width ?: 1.0) * state.zoom), 24.0 / ((page?.height ?: 1.0) * state.zoom))
+                } ?: -1 else -1
+                return true
+            }
+            android.view.MotionEvent.ACTION_MOVE -> {
+                val press = overlayPress ?: return false
+                val hit = overlayQuestion ?: return false
+                val start = overlayStart ?: return false
+                val moved = kotlin.math.hypot(ev.x - press.x, ev.y - press.y) > 16f
+                if (!questionOverlayEditing && moved) {
+                    overlayPress = null; overlayQuestion = null; overlayStart = null
+                    controller.onTouch(press)
+                    press.recycle()
+                    return controller.onTouch(ev)
+                }
+                if (questionOverlayEditing && moved) {
+                    val at = overlayPoint(ev.x, ev.y)?.second ?: return true
+                    overlayDraft = if (overlayCorner >= 0) com.xnotes.core.model.ProposalGeometry.resize(hit.crop, overlayCorner, at.x, at.y)
+                        else com.xnotes.core.model.ProposalGeometry.move(hit.crop, at.x - start.x, at.y - start.y)
+                    view.requestRender()
+                }
+                return true
+            }
+            android.view.MotionEvent.ACTION_POINTER_DOWN -> {
+                val press = overlayPress ?: return false
+                overlayPress = null; overlayQuestion = null; overlayStart = null; overlayDraft = null
+                controller.onTouch(press)
+                press.recycle()
+                return controller.onTouch(ev)
+            }
+            android.view.MotionEvent.ACTION_UP -> {
+                val press = overlayPress ?: return false
+                val tapped = kotlin.math.hypot(ev.x - press.x, ev.y - press.y) <= 16f
+                press.recycle(); overlayPress = null
+                val hit = overlayQuestion
+                overlayQuestion = null; overlayStart = null
+                if (hit != null) {
+                    if (questionOverlayEditing) {
+                        selectedQuestionOverlayId = hit.id
+                        overlayOwner?.selectedQuestionOverlayId = hit.id
+                        overlayDraft?.let { crop ->
+                            (overlayOwner ?: this).saveQuestionOverlayCrop(hit.id, crop)
+                        }
+                    } else if (tapped) {
+                        overlayTargetSession?.jumpTo(hit.id) ?: selectQuestionFromPage(hit.id)
+                    }
+                }
+                overlayDraft = null
+                view.requestRender()
+                return true
+            }
+            android.view.MotionEvent.ACTION_CANCEL -> {
+                overlayPress?.recycle(); overlayPress = null; overlayQuestion = null; overlayStart = null; overlayDraft = null
+                return true
+            }
+        }
+        return overlayPress != null
+    }
+    private fun drawQuestionOverlays(canvas: android.graphics.Canvas) {
+        if (!questionOverlaysEnabled) return
+        val items = questionOverlaySet?.entries?.mapNotNull { it.question }.orEmpty()
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { style = android.graphics.Paint.Style.STROKE }
+        items.forEach { question ->
+            val pageIndex = state.document.pages.indexOfFirst { it.pdfPage == question.sourcePageIndex }
+            if (pageIndex < 0 || pageIndex >= state.pageRects.size) return@forEach
+            val page = state.document.pages[pageIndex]
+            val crop = if (overlayQuestion?.id == question.id) overlayDraft ?: question.crop else question.crop
+            val rect = com.xnotes.core.geometry.Rect.ltrb(crop.left * page.width, crop.top * page.height,
+                crop.right * page.width, crop.bottom * page.height)
+            val content = state.fromPageSpaceRect(pageIndex, rect)
+            val a = state.contentToViewport(content.topLeft)
+            val b = state.contentToViewport(com.xnotes.core.geometry.Pt(content.right, content.bottom))
+            val active = question.id == (overlayTargetSession?.current?.question?.id ?: questionSession?.current?.question?.id ?: selectedQuestionOverlayId)
+            paint.color = if (active) android.graphics.Color.rgb(22, 129, 60) else android.graphics.Color.rgb(36, 116, 220)
+            paint.strokeWidth = if (active) 5f else 3f
+            canvas.drawRect(a.x.toFloat(), a.y.toFloat(), b.x.toFloat(), b.y.toFloat(), paint)
+        }
+    }
     fun startQuestionDetection() {
         if (opening || questionSession != null) return
         if (!state.document.hasPdf || state.document.path == null) { message = "Save a PDF-backed notebook first"; return }
@@ -484,7 +659,98 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         }
     }
 
-    fun openQuestionMode() {
+    /** Route source-pane question taps into the left workspace without navigating the source. */
+    fun selectQuestionFromPage(id: String) {
+        val root = if (pane == Pane.PRIMARY) this else sibling
+        if (pane == Pane.SECONDARY && root?.noteOpen == true && !isQuestionPeek)
+            root.showQuestionFromSource(this, id)
+        else questionSession?.jumpTo(id) ?: openQuestionMode(id)
+    }
+
+    private fun showQuestionFromSource(source: Editor, id: String) {
+        val uri = source.currentUri ?: return
+        val set = source.questionOverlaySet ?: return
+        val action = QuestionWorkspaceRoute.action(SourceQuestion(uri, set.id, id),
+            set.entries.mapNotNull { it.question?.id },
+            if (questionSession != null) currentUri else null, questionSession?.set?.id)
+        if (action == QuestionWorkspaceAction.IGNORE) return
+        focusPane(Pane.PRIMARY)
+        val current = questionSession
+        if (action == QuestionWorkspaceAction.JUMP && current != null) {
+            current.jumpTo(id)
+            return
+        }
+        if (routingSourceQuestion || openingQuestions || source.opening) return
+        routingSourceQuestion = true
+        val name = source.state.document.displayName
+        autosaveScope.launch {
+            var handedOff = false
+            try {
+                source.flushAutosave()
+                source.noteWriteJob?.join()
+                if (source.currentUri != uri || source.state.document.dirty) {
+                    message = "Save the source notebook before opening its question."
+                    return@launch
+                }
+                closeQuestionModeThen {
+                    autosaveScope.launch {
+                        try {
+                            if (!source.noteOpen || source.currentUri != uri) {
+                                message = "The source notebook changed before its question opened."
+                                return@launch
+                            }
+                            source.setQuestionReferenceOnly(true)
+                            questionSourceEditor = source
+                            openAsync(uri, name)
+                            if (currentUri == uri && noteOpen && state.document.hasPdf) openQuestionMode(id, set.id)
+                            else {
+                                questionSourceEditor = null
+                                source.setQuestionReferenceOnly(false)
+                            }
+                        } finally {
+                            routingSourceQuestion = false
+                        }
+                    }
+                }
+                handedOff = true
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { message = "Could not open the source question." }
+            finally {
+                if (!handedOff) routingSourceQuestion = false
+            }
+        }
+    }
+
+    private fun setQuestionReferenceOnly(enabled: Boolean) {
+        if (enabled) {
+            if (viewOnlyDuplicate) return
+            questionReferenceOnly = true
+            viewOnlyDuplicate = true
+            autosaveUri = null
+            controller.readOnly = true
+            questionOverlayEditing = false
+        } else if (questionReferenceOnly) {
+            questionReferenceOnly = false
+            viewOnlyDuplicate = false
+            controller.readOnly = false
+            if (noteOpen) currentUri?.let(::maybeBindAutosave)
+        }
+    }
+
+    private fun syncQuestionProjectionToSource(doc: Document) {
+        val source = questionSourceEditor?.takeIf { it.currentUri == doc.path && it.noteOpen } ?: return
+        for (page in source.state.document.pages) {
+            val sourcePage = doc.pages.firstOrNull { it.pdfPage != null && it.pdfPage == page.pdfPage } ?: continue
+            page.items.removeAll { it is com.xnotes.core.model.QuestionInkProjection }
+            page.items.addAll(sourcePage.items.filterIsInstance<com.xnotes.core.model.QuestionInkProjection>()
+                .map { it.deepCopy(textMeasurer) })
+        }
+        source.state.refreshAllInk()
+        source.refreshContent()
+        source.view.requestRender()
+    }
+
+    fun openQuestionMode(questionId: String? = null, expectedSetId: String? = null) {
         if (openingQuestions || questionSession != null || opening) return
         val doc = state.document
         val uri = doc.path ?: return
@@ -493,6 +759,16 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         autosaveScope.launch {
             try {
                 val set = findQuestions(doc)
+                if (expectedSetId != null && set?.id != expectedSetId) {
+                    message = "The source question set changed. Refresh its outlines and try again."
+                    questionSourceEditor?.setQuestionReferenceOnly(false)
+                    questionSourceEditor = null
+                    return@launch
+                }
+                if (expectedSetId != null && questionId != null && set?.entries?.any { it.question?.id == questionId } != true) {
+                    message = "That source question is no longer in this set."
+                    return@launch
+                }
                 if (state.document === doc && doc.path == uri && doc.pdfFile == pdf && noteOpen && !canvasOpen) {
                     if (set == null) message = "No questions saved for this notebook"
                     else {
@@ -506,29 +782,57 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
                         canvas.applyInputPrefs(preferences.fingerDraws, controller.penButtonTool, preferences.zoomLockPan)
                         canvas.applyZoomRange(preferences.canvasMinZoomPercent, preferences.canvasMaxZoomPercent)
                         val workspace = QuestionCanvasWorkspace(viewContext, canvas, doc, set.id, files, imageDir,
-                            onProjectionChanged = { state.refreshAllInk(); refreshContent() },
-                            persistSource = { saveQuestionProjection(doc) }, onError = { message = it })
+                            onProjectionChanged = { state.refreshAllInk(); refreshContent(); syncQuestionProjectionToSource(doc) },
+                            persistSource = { saveQuestionProjection(doc) }, onError = { message = it }, readOnly = viewOnlyDuplicate)
                         questionWorkspace = workspace
-                        val initial = set.entries.firstOrNull { it.question?.id == progress.lastQuestionId } ?: set.entries.firstOrNull()
+                        canvas.onViewportResized = { _, _ -> workspace.onViewportResized() }
+                        val initial = set.entries.firstOrNull { it.question?.id == questionId }
+                            ?: set.entries.firstOrNull { it.question?.id == progress.lastQuestionId } ?: set.entries.firstOrNull()
                         try { workspace.open(initial?.question) }
-                        catch (e: Exception) { workspace.close(); questionWorkspace = null; throw e }
+                        catch (e: Exception) { workspace.close(); questionWorkspace = null; canvas.onViewportResized = null; throw e }
+                        initial?.question?.id?.let { selected ->
+                            val at = set.entries.indexOfFirst { it.question?.id == selected }
+                            workspace.prefetch(set.entries.getOrNull(at + 1)?.question)
+                        }
                         controller.readOnly = true
+                        canvas.readOnly = viewOnlyDuplicate
                         questionSession = QuestionSession(set, pdf,
-                            progressStore = progressStore, initialProgress = progress,
+                            progressStore = if (viewOnlyDuplicate) null else progressStore,
+                            initialProgress = progress.copy(lastQuestionId = initial?.question?.id),
                             beforeTransition = { workspace.prepareTransition() },
                             onQuestionChanged = ::focusCurrentQuestion,
-                            onNavigate = workspace::open,
+                            onNavigate = { selected ->
+                                workspace.open(selected)
+                                val entries = questionSession?.set?.entries.orEmpty()
+                                val at = entries.indexOfFirst { it.question?.id == selected?.id }
+                                workspace.prefetch(entries.getOrNull(at + 1)?.question ?: entries.getOrNull(at - 1)?.question)
+                            },
                             onInputEnabled = { infinite.inputEnabled = it },
+                            readOnly = viewOnlyDuplicate,
                             onDelete = { id ->
                                 workspace.beginDelete()
                                 withContext(Dispatchers.IO) { com.xnotes.platform.QuestionSetRepository(files).deleteQuestion(uri, pdf, id) }
+                                questionOverlaySet = withContext(Dispatchers.IO) { com.xnotes.platform.QuestionSetRepository(files).find(uri, pdf) }
+                            },
+                            onReorder = { ids ->
+                                questionOverlaySet = withContext(Dispatchers.IO) {
+                                    com.xnotes.platform.QuestionSetRepository(files).also { it.reorder(uri, pdf, ids) }.find(uri, pdf)
+                                }
                             })
+                        if (pane == Pane.PRIMARY) enterCompactQuestionSplit()
+                        questionOverlaySet = set
                         focusCurrentQuestion()
                     }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (_: Exception) { message = "Could not load questions. Check the notebook source and question metadata." }
-            finally { openingQuestions = false }
+            finally {
+                openingQuestions = false
+                if (expectedSetId != null && questionSession == null) {
+                    questionSourceEditor?.setQuestionReferenceOnly(false)
+                    questionSourceEditor = null
+                }
+            }
         }
     }
 
@@ -583,6 +887,10 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
                         questionPeekEditor = it
                     }
                 }
+                peek.questionOverlaySet = session.set
+                peek.questionOverlaysEnabled = questionOverlaysEnabled
+                peek.overlayTargetSession = session
+                peek.overlayOwner = this@Editor
                 val question = session.current?.question
                 peek.state.document.pages.forEach { page ->
                     page.items.clear()
@@ -617,6 +925,11 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
                 if (questionSession === session) {
                     session.replaceCrop(updated)
                     questionWorkspace?.updateCrop(updated)
+                    questionOverlaySet = questionOverlaySet?.copy(entries = questionOverlaySet!!.entries.map {
+                        if (it.question?.id == updated.id) it.copy(question = updated) else it
+                    })
+                    questionPeekEditor?.questionOverlaySet = session.set
+                    view.requestRender()
                 }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (_: Exception) { message = "Could not finish updating the crop. Reopen Question Mode to reload the saved crop." }
@@ -634,6 +947,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
                 if (questionSession === current) {
                     questionWorkspace?.close()
                     questionWorkspace = null
+                    infinite.onViewportResized = null
                     questionPeekEditor?.let { peek ->
                         peek.pdfSource?.close()
                         peek.pdfSource = null
@@ -642,8 +956,11 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
                     }
                     questionPeekEditor = null
                     questionSession = null
+                    if (pane == Pane.PRIMARY) leaveCompactQuestionSplit()
+                    questionSourceEditor?.setQuestionReferenceOnly(false)
+                    questionSourceEditor = null
                     infinite.inputEnabled = true
-                    controller.readOnly = false
+                    controller.readOnly = viewOnlyDuplicate
                     state.pageCrop = null
                     state.focusedPage = null
                     view.questionInkAlpha = 255
@@ -1141,13 +1458,14 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
             // Any fresh canvas touch quietly retires the flow action bar and still does its job.
             if (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN) flowContextMenu = null
             if (questionSession?.busy == true) true
+            else if (overlayTouch(ev)) true
             else controller.onTouch(ev)
         }
         view.onTwoFingerTap = { dispatchTapGesture(preferences.twoFingerTap) }
         view.onThreeFingerTap = { dispatchTapGesture(preferences.threeFingerTap) }
         view.hover = { controller.onHover(it) }
         view.genericMotion = { controller.onGenericMotion(it) }
-        view.drawOverlay = { renderer, _ -> controller.drawOverlay(renderer) }
+        view.drawOverlay = { renderer, canvas -> controller.drawOverlay(renderer); drawQuestionOverlays(canvas) }
         controller.frontInk = com.xnotes.canvas.FrontInk(state, view, pad)
         pad.onSurfaceLost = { controller.frontInk?.surfaceLost() }
         view.debugOverlay.frontHud = { controller.frontInk?.hud }
@@ -2480,6 +2798,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
             state.openFileBytes = fileBytes
             state.lastSaveBytes = fileBytes // the on-disk size, until the first autosave rewrites it
             maybeBindAutosave(uri) // resume autosaving if this note lives in the granted folder
+            if (viewOnlyDuplicate) { autosaveUri = null; controller.readOnly = true }
             noteOpen = true // push the editor on top of backstage (only on a successful open)
         } catch (e: XNoteFormatException) {
             message = e.message ?: "Not an xnotes document."
@@ -2522,6 +2841,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
      * a cloud provider is an untimed binder call into that provider's process.
      */
     fun saveToThen(uri: String, onDone: (Boolean) -> Unit) {
+        if (viewOnlyDuplicate) { message = "Second view is read-only"; onDone(false); return }
         noteDebounceJob?.cancel() // this write supersedes a pending debounce
         val doc = state.document
         val startNs = System.nanoTime()
@@ -3632,6 +3952,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
 
     /** Remember the current note's view (zoom + scroll); a no-op unless it's a laid-out folder note. */
     private fun saveViewState() {
+        if (viewOnlyDuplicate) return // the second live viewport must not overwrite the primary's saved position
         if (!state.didInitialFit || state.viewportW <= 0) return // nothing meaningful established yet
         val key = viewKey(currentUri) ?: return
         viewStates.put(key, state.zoom, state.scrollX, state.scrollY, viewOverrides)
@@ -3756,8 +4077,11 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     private fun installInitialView(path: String?) {
         val saved = viewKey(path)?.let { viewStates.get(it) }
         installViewOverrides(saved?.overrides ?: com.xnotes.canvas.ViewOverrides())
+        // A stored zoom belongs to the old window width. A newly opened right pane must use its
+        // own measured viewport before it can restore a useful fit.
         state.pendingInitialView =
-            if (saved != null) InitialView.Restore(saved.zoom, saved.scrollX, saved.scrollY) else InitialView.FitWidth
+            if (saved != null && pane == Pane.PRIMARY) InitialView.Restore(saved.zoom, saved.scrollX, saved.scrollY)
+            else InitialView.FitWidth
         state.didInitialFit = false
         if (state.viewportW > 0) state.establishInitialView()
     }
@@ -4035,6 +4359,9 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         controller.resetGestureState() // drop the outgoing note's fling/elastic so it can't bleed in
         clearPageSelection()
         pageClipboard.clear() // clones reference the outgoing document; don't paste them into another
+        questionOverlaySet = null
+        selectedQuestionOverlayId = null
+        questionOverlayEditing = false
         state.document = doc
         rebuildPdfSource()
         adoptOpenPdf(doc) // outgoing note's PDF source is now closed; delete its temp file
@@ -4481,6 +4808,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
 
     fun handleKeyDown(e: android.view.KeyEvent): Boolean {
         if (questionDetectionOpen) return false
+        if (viewOnlyDuplicate) return false
         // A canvas is on top: it owns the keyboard, and understands only its own shortcuts.
         if (isQuestionPeek) return false
         if (questionSession?.busy == true) return true
@@ -5051,6 +5379,25 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
 
     /** The divider position, as the first pane's share of the split axis. */
     var splitRatio by mutableStateOf(0.5f)
+    private var splitUserResized = false
+    private var ratioBeforeQuestion: Float? = null
+
+    fun resizeSplit(ratio: Float) {
+        splitUserResized = true
+        splitRatio = ratio
+    }
+
+    private fun enterCompactQuestionSplit() {
+        if (questionSession == null || secondary?.noteOpen != true || splitUserResized || ratioBeforeQuestion != null) return
+        ratioBeforeQuestion = splitRatio
+        splitRatio = 0.30f
+    }
+
+    private fun leaveCompactQuestionSplit() {
+        val before = ratioBeforeQuestion ?: return
+        ratioBeforeQuestion = null
+        if (!splitUserResized) splitRatio = before
+    }
 
     /** The pane that keyboard shortcuts and the file/export actions act on. */
     var focusedPane by mutableStateOf(Pane.PRIMARY)
@@ -5082,6 +5429,61 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         secondary = it
     }
 
+    /** The second live viewport has its own Editor/CanvasState and cannot race the writable pane. */
+    fun openSecondView() {
+        val root = if (pane == Pane.PRIMARY) this else sibling ?: return
+        if (root.secondary?.noteOpen == true) { message = "Close the other pane before opening a second view"; return }
+        val uri = root.state.document.path ?: return
+        val second = root.secondaryPane()
+        second.viewOnlyDuplicate = true
+        if (!root.splitUserResized) root.splitRatio = 0.5f
+        root.autosaveScope.launch {
+            second.openAsync(uri, root.state.document.displayName)
+            if (!second.noteOpen) root.abandonSecondary()
+            else {
+                root.markSecondaryOpened()
+                root.enterCompactQuestionSplit()
+                root.message = "Second view opened read-only; the first view remains editable"
+            }
+        }
+    }
+
+    /** Open a chosen notebook in the second pane without replacing the first pane's document. */
+    fun openSecondDocument(uri: String, name: String?) {
+        val root = if (pane == Pane.PRIMARY) this else sibling ?: return
+        if (!root.noteOpen || root.secondary?.opening == true) return
+        val second = root.secondaryPane()
+        if (second.noteOpen && second.currentUri == uri) return
+        val replacingQuestionSource = root.questionSourceEditor === second && second.currentUri != uri
+        val wasReadOnly = second.viewOnlyDuplicate
+        second.viewOnlyDuplicate = uri == root.state.document.path
+        if (!second.noteOpen) {
+            if (!root.splitUserResized) root.splitRatio = 0.5f
+        }
+        root.autosaveScope.launch {
+            if (com.xnotes.core.util.DocumentKind.ofName(name.orEmpty()) == com.xnotes.core.util.DocumentKind.CANVAS)
+                second.openCanvasAsync(uri, name)
+            else second.openAsync(uri, name)
+            if (!second.noteOpen || second.currentUri != uri) {
+                second.viewOnlyDuplicate = wasReadOnly
+                second.controller.readOnly = wasReadOnly
+                if (!second.noteOpen) root.abandonSecondary()
+                root.message = "Could not open the second note."
+            } else {
+                if (replacingQuestionSource) {
+                    second.setQuestionReferenceOnly(false)
+                    root.questionSourceEditor = null
+                }
+                root.markSecondaryOpened()
+                if (root.questionSession != null) root.enterCompactQuestionSplit()
+            }
+        }
+    }
+
+    fun markSecondaryOpened() {
+        if (secondary?.noteOpen == true) secondaryStarted = true
+    }
+
     /** Give up on a second pane whose file never opened, so a failed split leaves no stray editor. */
     fun abandonSecondary() {
         val other = secondary ?: return
@@ -5106,6 +5508,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     fun releaseClosedSecondary() {
         val other = secondary ?: return
         if (other.noteOpen) { secondaryStarted = true; return }
+        if (other.opening) return
         if (!secondaryStarted) return
         secondaryStarted = false
         other.sibling = null

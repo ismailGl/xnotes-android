@@ -4,6 +4,7 @@ import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import kotlinx.coroutines.runBlocking
 
 class QuestionFolderFilesTest {
     @get:Rule val temp = TemporaryFolder()
@@ -100,5 +101,16 @@ class QuestionFolderFilesTest {
         }
         assertEquals("saved", files.read("set/state.json")!!.decodeToString())
         assertNull(LocalQuestionFiles(legacy).read("set/state.json"))
+    }
+    @Test fun answerKeySurvivesRegrantWithoutPrivateFiles() = runBlocking {
+        val provider = Provider()
+        val first = QuestionProgressRepository(FolderQuestionFiles(provider, temp.newFolder()), "set")
+        first.save(QuestionProgress(choices = mapOf("q" to "B"), answerKeys = mapOf("q" to "A"),
+            feedback = QuestionFeedback.MANUAL, revealed = setOf("q")))
+        assertTrue(provider.nodes.keys.any { it == "root/.xnote/questions/set/state.json" })
+        val restored = QuestionProgressRepository(FolderQuestionFiles(provider, temp.newFolder()), "set").load()
+        assertEquals("A", restored.answerKeys["q"])
+        assertEquals(QuestionResult.INCORRECT, restored.resultFor("q"))
+        assertTrue(restored.showsResult("q", listOf("q")))
     }
 }

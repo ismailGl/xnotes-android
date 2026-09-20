@@ -24,7 +24,8 @@ class QuestionEditorPersistenceTest {
         root.put("futureAnswerKey", JSONObject().put("detected", false))
         root.getJSONArray("questions").getJSONObject(0).put("futureField", "preserve")
         files.write("${set.id}.json") { it.write(root.toString().toByteArray()) }
-        val progress = QuestionProgress("stable", mapOf("stable" to "B"), feedback = QuestionFeedback.ON_COMPLETION)
+        val progress = QuestionProgress("stable", mapOf("stable" to "B"), feedback = QuestionFeedback.ON_COMPLETION,
+            answerKeys = mapOf("stable" to "A"), completed = setOf("stable"))
         QuestionProgressRepository(files, set.id).save(progress)
         files.write("${set.id}/answers/stable.xnote") { it.write(byteArrayOf(1, 2, 3)) }
         val corrected = NormalizedRect(.05, .15, .9, .95)
@@ -52,7 +53,8 @@ class QuestionEditorPersistenceTest {
         val set = repo.append("note", "Test", pdf, Question("a", 0, crop))
         repo.append("note", "Test", pdf, Question("b", 1, crop))
         QuestionProgressRepository(files, set.id).save(QuestionProgress("a",
-            choices = mapOf("a" to "A", "b" to "B"), completed = setOf("a", "b")))
+            choices = mapOf("a" to "A", "b" to "B"), completed = setOf("a", "b"),
+            answerKeys = mapOf("a" to "A", "b" to "C"), revealed = setOf("a", "b")))
         files.write("${set.id}/questions/a/ink.xcanvas") { it.write(byteArrayOf(1)) }
         files.write("${set.id}/answers/a.xnote") { it.write(byteArrayOf(2)) }
         files.write("${set.id}/questions/b/ink.xcanvas") { it.write(byteArrayOf(3)) }
@@ -65,6 +67,8 @@ class QuestionEditorPersistenceTest {
         val progress = QuestionProgressRepository(files, set.id).load()
         assertEquals(mapOf("b" to "B"), progress.choices)
         assertEquals(setOf("b"), progress.completed)
+        assertEquals(mapOf("b" to "C"), progress.answerKeys)
+        assertEquals(setOf("b"), progress.revealed)
         assertEquals("original PDF", pdf.readText())
     }
 
@@ -85,8 +89,22 @@ class QuestionEditorPersistenceTest {
         assertEquals(QuestionResult.UNKNOWN, review.overlays.single().result)
         assertNull(review.overlays.single().indicator)
         assertNull(review.overlays.single().color)
-        val graded = QuestionPageReview.create(2, listOf(Question("q", 2, crop)), state.copy(results = mapOf("q" to QuestionResult.CORRECT)))
+        val graded = QuestionPageReview.create(2, listOf(Question("q", 2, crop)), state.copy(answerKeys = mapOf("q" to "A")))
         assertNotNull(graded.overlays.single().color)
         assertEquals("✓", graded.overlays.single().indicator)
+    }
+    @Test fun reviewUsesStableIdsAndEachQuestionsOwnCropAfterReorder() {
+        val first = Question("first", 2, NormalizedRect(.1, .2, .3, .4))
+        val second = Question("second", 2, NormalizedRect(.5, .6, .8, .9))
+        val state = QuestionProgress(choices = mapOf("first" to "A", "second" to "B"),
+            answerKeys = mapOf("first" to "A", "second" to "C"), feedback = QuestionFeedback.IMMEDIATE)
+        val review = QuestionPageReview.create(2, listOf(second, first), state)
+        assertEquals(listOf("second", "first"), review.overlays.map { it.question.id })
+        assertEquals(second.crop, review.overlays[0].question.crop)
+        assertEquals(QuestionResult.INCORRECT, review.overlays[0].result)
+        assertEquals("✕", review.overlays[0].indicator)
+        assertEquals(first.crop, review.overlays[1].question.crop)
+        assertEquals(QuestionResult.CORRECT, review.overlays[1].result)
+        assertEquals("✓", review.overlays[1].indicator)
     }
 }

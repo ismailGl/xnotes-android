@@ -70,6 +70,7 @@ fun Toolbar(
     onOpenBackstage: () -> Unit,
     onInsertImage: () -> Unit,
     onAddStickers: () -> Unit,
+    onOpenSecondDocument: () -> Unit,
     modifier: Modifier = Modifier,
     onClosePane: (() -> Unit)? = null,
 ) {
@@ -110,7 +111,12 @@ fun Toolbar(
             // sections, and each item dispatches to its renderer (see ToolbarItemView).
             val questionItems = QUESTION_TOOLBAR_ITEMS
             editor.toolbarLayout.visibleSections.map { section ->
-                section.copy(entries = section.visibleEntries.filter { it.item !in questionItems && (!editor.isQuestionPeek || it.item in setOf(ToolbarItem.HOME, ToolbarItem.PAGE_NAV, ToolbarItem.ZOOM, ToolbarItem.FIT, ToolbarItem.ZOOM_LOCK, ToolbarItem.VIEW, ToolbarItem.FULLSCREEN)) })
+                section.copy(entries = section.visibleEntries.filter { (!editor.viewOnlyDuplicate || it.item in setOf(
+                    ToolbarItem.HOME, ToolbarItem.SIDEBAR, ToolbarItem.QUESTION_OVERLAY, ToolbarItem.PAN,
+                    ToolbarItem.PAGE_NAV, ToolbarItem.ZOOM, ToolbarItem.FIT, ToolbarItem.ZOOM_LOCK,
+                    ToolbarItem.VIEW, ToolbarItem.FULLSCREEN)) &&
+                    (it.item !in questionItems || it.item == ToolbarItem.QUESTION_OVERLAY) &&
+                    (!editor.isQuestionPeek || it.item in setOf(ToolbarItem.HOME, ToolbarItem.PAGE_NAV, ToolbarItem.ZOOM, ToolbarItem.FIT, ToolbarItem.ZOOM_LOCK, ToolbarItem.VIEW, ToolbarItem.FULLSCREEN, ToolbarItem.QUESTION_OVERLAY)) })
             }.filter { it.hasVisible }.forEachIndexed { si, section ->
                 if (si > 0) Separator()
                 section.visibleEntries.forEach { entry ->
@@ -126,6 +132,7 @@ fun Toolbar(
                         onOpenBackstage = onOpenBackstage,
                         onInsertImage = onInsertImage,
                         onAddStickers = onAddStickers,
+                        onOpenSecondDocument = onOpenSecondDocument,
                         onToggleFullscreen = onToggleFullscreen,
                     )
                 }
@@ -161,6 +168,7 @@ private fun ToolbarItemView(
     onOpenBackstage: () -> Unit,
     onInsertImage: () -> Unit,
     onAddStickers: () -> Unit,
+    onOpenSecondDocument: () -> Unit,
     onToggleFullscreen: () -> Unit,
 ) {
     val popupHost: ToolPopupHost = editor
@@ -180,6 +188,18 @@ private fun ToolbarItemView(
         )
         ToolbarItem.SIDEBAR ->
             ToolbarIcon(XnotesIcons.sidebar, "Side panel", active = editor.sidebarVisible) { editor.toggleSidebar() }
+        ToolbarItem.QUESTION_OVERLAY -> if (editor.state.document.hasPdf && editor.questionOverlaySet != null) {
+            ToolbarIcon(XnotesIcons.view, "Question outlines", active = editor.questionOverlaysEnabled) { editor.toggleQuestionOverlays() }
+            if (editor.questionOverlaysEnabled && !editor.viewOnlyDuplicate && editor.overlayOwner?.viewOnlyDuplicate != true) {
+                ToolbarIcon(XnotesIcons.edit, "Edit questions", active = editor.questionOverlayEditing) { editor.toggleQuestionOverlayEditing() }
+                if (editor.questionOverlayEditing && editor.selectedQuestionOverlayId != null)
+                    ToolbarIcon(XnotesIcons.trash, "Delete selected question") { editor.deleteSelectedQuestionOverlay() }
+            }
+        }
+        ToolbarItem.DUPLICATE_VIEW -> if (editor.state.document.hasPdf && editor.pane == Pane.PRIMARY && !editor.inSplit) {
+            ToolbarIcon(XnotesIcons.split, "Open same PDF in second pane") { editor.openSecondView() }
+            ToolbarIcon(XnotesIcons.folder, "Open another note in second pane") { onOpenSecondDocument() }
+        }
 
         ToolbarItem.PEN, ToolbarItem.DASHED, ToolbarItem.CALLIGRAPHY, ToolbarItem.SPEED,
         ToolbarItem.TAPER, ToolbarItem.HIGHLIGHTER, ToolbarItem.ERASER, ToolbarItem.PAN,
