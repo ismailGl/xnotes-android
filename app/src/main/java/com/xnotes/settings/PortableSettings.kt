@@ -8,7 +8,7 @@ object PortableSettings {
     const val VERSION = 1
     private val fields = setOf("tools", "toolbar_colors", "toolbar_color_count", "toolbar_layout",
         "canvas_toolbar_layout", "start_on_home", "explorer_sort_key", "explorer_sort_descending",
-        "new_note_style", "new_note_flow", "new_canvas_background", "view_defaults")
+        "new_note_style", "new_note_flow", "new_canvas_background", "view_defaults", "auto_import_pdfs")
     private val preferences = setOf("ui_appearance", "accent_color", "system_palette_style",
         "dark_palette_style", "light_palette_style", "oled_palette_style", "material_seed",
         "hide_window_decoration", "page_color", "default_page_size", "new_note_name_template",

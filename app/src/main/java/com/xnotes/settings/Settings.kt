@@ -49,6 +49,9 @@ data class Settings(
     val recentColors: List<Rgba> = emptyList(),
     /** Persisted SAF tree URI for the in-app file explorer's root folder, or null. */
     val browseRoot: String? = null,
+    /** Folder-backed preference; the SAF grant/URI itself stays installation-local. */
+    val autoImportPdfs: Boolean = false,
+    val autoImportSourceUri: String? = null,
     /** Whether the next launch opens the home screen (true) or the last-open note (false). */
     val startOnHome: Boolean = true,
     val sidebarVisible: Boolean = false,
@@ -88,6 +91,8 @@ data class Settings(
             .put("last_tool", lastTool.id)
             .put("recent_colors", JSONArray().apply { recentColors.forEach { put(rgbaArr(it)) } })
             .apply { browseRoot?.let { put("browse_root", it) } }
+            .put("auto_import_pdfs", autoImportPdfs)
+            .apply { autoImportSourceUri?.let { put("auto_import_source_uri", it) } }
             .put("start_on_home", startOnHome)
             .put("sidebar_visible", sidebarVisible)
             .put("explorer_sort_key", explorerSortKey.id)
@@ -136,6 +141,8 @@ data class Settings(
                     ?.takeIf { it in Tool.wheelOrder } ?: Tool.DEFAULT,
                 recentColors = rgbaList(o.optJSONArray("recent_colors")).take(24),
                 browseRoot = o.optString("browse_root", "").ifEmpty { null },
+                autoImportPdfs = o.optBoolean("auto_import_pdfs", false),
+                autoImportSourceUri = o.optString("auto_import_source_uri", "").ifEmpty { null },
                 startOnHome = o.optBoolean("start_on_home", true),
                 sidebarVisible = o.optBoolean("sidebar_visible", false),
                 explorerSortKey = ExplorerSortKey.fromId(o.optString("explorer_sort_key", "modified")),

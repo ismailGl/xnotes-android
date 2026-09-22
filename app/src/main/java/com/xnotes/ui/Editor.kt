@@ -662,9 +662,13 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     /** Route source-pane question taps into the left workspace without navigating the source. */
     fun selectQuestionFromPage(id: String) {
         val root = if (pane == Pane.PRIMARY) this else sibling
-        if (pane == Pane.SECONDARY && root?.noteOpen == true && !isQuestionPeek)
-            root.showQuestionFromSource(this, id)
-        else questionSession?.jumpTo(id) ?: openQuestionMode(id)
+        val splitRoot = root?.takeIf { it.inSplit }
+        val right = splitRoot?.paneOnSide(SplitSide.RIGHT)
+        if (right === this && !isQuestionPeek) {
+            val workspace = questionWorkspacePane(splitRoot.primaryOnLeft)
+            (if (workspace == Pane.PRIMARY) splitRoot else splitRoot.secondaryPane())
+                .showQuestionFromSource(this, id)
+        } else questionSession?.jumpTo(id) ?: openQuestionMode(id)
     }
 
     private fun showQuestionFromSource(source: Editor, id: String) {
@@ -674,7 +678,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
             set.entries.mapNotNull { it.question?.id },
             if (questionSession != null) currentUri else null, questionSession?.set?.id)
         if (action == QuestionWorkspaceAction.IGNORE) return
-        focusPane(Pane.PRIMARY)
+        (if (pane == Pane.PRIMARY) this else sibling)?.focusPane(pane)
         val current = questionSession
         if (action == QuestionWorkspaceAction.JUMP && current != null) {
             current.jumpTo(id)
@@ -5379,12 +5383,30 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
 
     /** The divider position, as the first pane's share of the split axis. */
     var splitRatio by mutableStateOf(0.5f)
+    /** Whether the primary editor is drawn on the visual left/top side of the split. */
+    var primaryOnLeft by mutableStateOf(true)
+        private set
     private var splitUserResized = false
     private var ratioBeforeQuestion: Float? = null
 
     fun resizeSplit(ratio: Float) {
         splitUserResized = true
         splitRatio = ratio
+    }
+
+    val autoImportPdfs: Boolean get() = settings.autoImportPdfs
+    val autoImportSourceUri: String? get() = settings.autoImportSourceUri
+
+    fun setAutoImportPdfs(enabled: Boolean) {
+        settings = settings.copy(autoImportPdfs = enabled)
+        settingsRepo.save(settings)
+        prefsVersion++
+    }
+
+    fun setAutoImportSource(uri: String) {
+        settings = settings.copy(autoImportSourceUri = uri, autoImportPdfs = true)
+        settingsRepo.save(settings)
+        prefsVersion++
     }
 
     private fun enterCompactQuestionSplit() {
@@ -5423,10 +5445,51 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
      *  one, and keeps its own document, history, canvas and session slot. */
     fun secondaryPane(): Editor = secondary ?: Editor(viewContext, Pane.SECONDARY).also {
         it.keyActions = keyActions // the shortcuts already resolve their target pane themselves
+        // A new pane must never inherit the persisted Pages-panel preference. The live pane keeps
+        // its current state, and either panel can still be opened manually afterward.
+        it.sidebarVisible = sidebarAfterDocumentOpen(null)
         it.sibling = this
         sibling = it
         secondaryStarted = false
         secondary = it
+    }
+
+    /** Resolve a visual side without moving or recreating either live editor. */
+    fun paneOnSide(side: SplitSide): Editor = when (paneOnSide(primaryOnLeft, side)) {
+        Pane.PRIMARY -> this
+        Pane.SECONDARY -> secondaryPane()
+    }
+
+    /** Arrange a newly created split while leaving the already-open editor object untouched. */
+    fun arrangeFirstSplit(newDocumentSide: SplitSide) {
+        primaryOnLeft = layoutForFirstSplit(newDocumentSide)
+        if (!splitUserResized) splitRatio = 0.5f
+    }
+
+    /** Pick the requested visual pane, creating a split around whichever editor is still live. */
+    fun preparePaneForOpen(side: SplitSide): Editor {
+        if (inSplit) return paneOnSide(side)
+        val other = secondary
+        if (noteOpen) {
+            arrangeFirstSplit(side)
+            return secondaryPane()
+        }
+        if (other?.noteOpen == true) {
+            primaryOnLeft = side == SplitSide.LEFT
+            if (!splitUserResized) splitRatio = 0.5f
+            return this
+        }
+        return paneOnSide(side)
+    }
+
+    /** Recompute same-PDF read-only roles after either pane is opened or replaced. */
+    fun refreshSplitDocumentRoles() {
+        val other = secondary ?: return
+        val duplicate = noteOpen && other.noteOpen && currentUri != null && currentUri == other.currentUri
+        viewOnlyDuplicate = false
+        controller.readOnly = false
+        other.viewOnlyDuplicate = duplicate
+        other.controller.readOnly = duplicate
     }
 
     /** The second live viewport has its own Editor/CanvasState and cannot race the writable pane. */
@@ -5434,6 +5497,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
         val root = if (pane == Pane.PRIMARY) this else sibling ?: return
         if (root.secondary?.noteOpen == true) { message = "Close the other pane before opening a second view"; return }
         val uri = root.state.document.path ?: return
+        root.arrangeFirstSplit(SplitSide.RIGHT)
         val second = root.secondaryPane()
         second.viewOnlyDuplicate = true
         if (!root.splitUserResized) root.splitRatio = 0.5f
@@ -5452,6 +5516,7 @@ class Editor(context: Context, val pane: Pane = Pane.PRIMARY) : ToolPopupHost, S
     fun openSecondDocument(uri: String, name: String?) {
         val root = if (pane == Pane.PRIMARY) this else sibling ?: return
         if (!root.noteOpen || root.secondary?.opening == true) return
+        if (root.secondary?.noteOpen != true) root.arrangeFirstSplit(SplitSide.RIGHT)
         val second = root.secondaryPane()
         if (second.noteOpen && second.currentUri == uri) return
         val replacingQuestionSource = root.questionSourceEditor === second && second.currentUri != uri

@@ -198,7 +198,7 @@ private fun ToolbarItemView(
         }
         ToolbarItem.DUPLICATE_VIEW -> if (editor.state.document.hasPdf && editor.pane == Pane.PRIMARY && !editor.inSplit) {
             ToolbarIcon(XnotesIcons.split, "Open same PDF in second pane") { editor.openSecondView() }
-            ToolbarIcon(XnotesIcons.folder, "Open another note in second pane") { onOpenSecondDocument() }
+            ToolbarIcon(XnotesIcons.folder, "Open another PDF") { onOpenSecondDocument() }
         }
 
         ToolbarItem.PEN, ToolbarItem.DASHED, ToolbarItem.CALLIGRAPHY, ToolbarItem.SPEED,

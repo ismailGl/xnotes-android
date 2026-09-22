@@ -39,6 +39,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -250,7 +252,9 @@ private fun EditorScreen(
     // Backstage is the root of the stack; the editor is pushed on top only when a note is open
     // (editor.noteOpen). Every launch starts on backstage.
     var backstageView by remember { mutableStateOf(com.xnotes.ui.BackstageView.HOME) }
-    var browsingForSecond by remember { mutableStateOf(false) }
+    var openingAnotherSide by remember { mutableStateOf<com.xnotes.ui.SplitSide?>(null) }
+    var choosingAnotherSide by remember { mutableStateOf(false) }
+    val browsingForSecond = openingAnotherSide != null
     var showShareChooser by remember { mutableStateOf(false) }
     var guardAction by remember { mutableStateOf<GuardRequest?>(null) }
     var pendingAfterSave by remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -274,6 +278,17 @@ private fun EditorScreen(
     val scope = rememberCoroutineScope()
     val resolver = context.contentResolver
     val rwFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+    val autoImport = remember(editor) { com.xnotes.platform.SafAutoImport(context, editor) }
+    var autoImportReport by remember { mutableStateOf<com.xnotes.platform.AutoImportReport?>(null) }
+    var confirmDeleteOriginals by remember { mutableStateOf(false) }
+    fun scanAutoImport() {
+        scope.launch {
+            val job = coroutineContext[kotlinx.coroutines.Job]
+            val report = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { autoImport.scan { job?.isActive == true } }
+            if (report != null && (report.imported.isNotEmpty() || report.failed.isNotEmpty() || report.error != null))
+                autoImportReport = report
+        }
+    }
 
     // "Open…" remembers the picked .xnote and shows the name dialog at once; it's copied into the folder at Save.
     val openLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -423,6 +438,15 @@ private fun EditorScreen(
             editor.updateBrowseRoot(it.toString())
         }
     }
+    val pickAutoImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        uri?.let {
+            val granted = runCatching { resolver.takePersistableUriPermission(it, rwFlags) }.isSuccess ||
+                runCatching { resolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION) }.isSuccess
+            if (granted) { editor.setAutoImportSource(it.toString()); scanAutoImport() }
+            else editor.message = "Could not keep access to the Auto Import folder."
+        }
+    }
+    LaunchedEffect(Unit) { if (editor.autoImportPdfs) scanAutoImport() }
 
     /** Open the "Save as" picker for [target], remembering which pane its result belongs to. */
     fun launchSaveAs(target: Editor) {
@@ -491,7 +515,7 @@ private fun EditorScreen(
 
     /** Open two picked files together, one per pane, and start the split focused on the first. */
     fun openSplit(firstUri: String, secondUri: String) {
-        editor.splitRatio = 0.5f
+        editor.arrangeFirstSplit(com.xnotes.ui.SplitSide.RIGHT)
         editor.focusPane(com.xnotes.ui.Pane.PRIMARY)
         val second = editor.secondaryPane()
         scope.launch {
@@ -709,16 +733,36 @@ private fun EditorScreen(
                 editor = editor,
                 view = backstageView,
                 onSelectView = { backstageView = it },
-                onExitApp = { if (browsingForSecond) browsingForSecond = false else (context as? android.app.Activity)?.finish() },
+                onExitApp = { if (browsingForSecond) openingAnotherSide = null else (context as? android.app.Activity)?.finish() },
                 onImportCodeTheme = { importCodeThemeLauncher.launch(arrayOf("*/*")) },
                 onImportFont = { importFontLauncher.launch(arrayOf("*/*")) },
+                onPickAutoImportFolder = { pickAutoImportLauncher.launch(null) },
+                onScanAutoImport = { scanAutoImport() },
                 onOpenSystem = { openLauncher.launch(arrayOf("*/*")) },
                 onImportPdf = { importPdfLauncher.launch(arrayOf("application/pdf")) },
                 onOpenFile = { uri ->
-                    if (browsingForSecond) {
-                        val open = { browsingForSecond = false; editor.openSecondDocument(uri, displayNameOf(resolver, Uri.parse(uri))) }
-                        val second = editor.secondary
-                        if (second?.noteOpen == true) guarded(second, open) else open()
+                    val side = openingAnotherSide
+                    if (side != null) {
+                        val target = editor.preparePaneForOpen(side)
+                        val targetWasOpen = target.noteOpen
+                        val sidebarWasVisible = target.sidebarVisible.takeIf { targetWasOpen }
+                        val open = {
+                            openingAnotherSide = null
+                            scope.launch {
+                                openInto(target, uri)
+                                // Opening/replacing a document must not choose a panel for the user.
+                                target.sidebarVisible = com.xnotes.ui.sidebarAfterDocumentOpen(sidebarWasVisible)
+                                if (target.noteOpen && target.currentUri == uri) {
+                                    editor.markSecondaryOpened()
+                                    editor.refreshSplitDocumentRoles()
+                                    editor.focusPane(target.pane)
+                                } else if (!targetWasOpen && target.pane == com.xnotes.ui.Pane.SECONDARY) {
+                                    editor.abandonSecondary()
+                                }
+                            }
+                            Unit
+                        }
+                        if (targetWasOpen) guarded(target, open) else open()
                     } else guarded(editor) { openTreeFile(uri) }
                 },
                 onPickRoot = { pickRootLauncher.launch(null) },
@@ -734,7 +778,7 @@ private fun EditorScreen(
                     else guardedAll { openSplit(first, second) }
                 },
             )
-            if (browsingForSecond) IconButton(onClick = { browsingForSecond = false }, modifier = Modifier.align(Alignment.TopEnd)) {
+            if (browsingForSecond) IconButton(onClick = { openingAnotherSide = null }, modifier = Modifier.align(Alignment.TopEnd)) {
                 Icon(XnotesIcons.close, "Return to documents")
             }
             }
@@ -761,7 +805,7 @@ private fun EditorScreen(
                     guardedAll { editor.goHomeAll() }
                 },
                 onClosePane = { pane -> guarded(pane) { pane.goHome() } },
-                onOpenSecondDocument = { backstageView = com.xnotes.ui.BackstageView.HOME; browsingForSecond = true },
+                onOpenSecondDocument = { choosingAnotherSide = true },
                 onInsertImage = { pane, at ->
                     pendingInsert = PendingInsert(pane, at)
                     insertImageLauncher.launch(arrayOf("image/*"))
@@ -784,6 +828,69 @@ private fun EditorScreen(
             }
         }
     }
+    if (choosingAnotherSide) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { choosingAnotherSide = false },
+        title = { Text("Open another PDF") },
+        text = { Text("Choose which side to open the PDF on.") },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = {
+                choosingAnotherSide = false
+                openingAnotherSide = com.xnotes.ui.SplitSide.LEFT
+                backstageView = com.xnotes.ui.BackstageView.HOME
+            }) { Text("Open on left") }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = {
+                choosingAnotherSide = false
+                openingAnotherSide = com.xnotes.ui.SplitSide.RIGHT
+                backstageView = com.xnotes.ui.BackstageView.HOME
+            }) { Text("Open on right") }
+        },
+    )
+    autoImportReport?.let { report ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { autoImportReport = null },
+            title = { Text("Auto Import") },
+            text = {
+                Column(Modifier.height(380.dp).verticalScroll(rememberScrollState())) {
+                    Text("Imported ${report.imported.size} PDF${if (report.imported.size == 1) "" else "s"}")
+                    report.imported.groupBy { it.source.path.substringBeforeLast('/', "") }.forEach { (folder, items) ->
+                        Text(if (folder.isEmpty()) "Root" else folder, modifier = Modifier.padding(top = 12.dp))
+                        items.forEach { item -> Text("✓ ${item.source.path.substringAfterLast('/')}" +
+                            if (item.updated) " (updated copy)" else "", modifier = Modifier.padding(start = 12.dp)) }
+                    }
+                    if (report.failed.isNotEmpty()) {
+                        Text("Failed: ${report.failed.size}", modifier = Modifier.padding(top = 12.dp))
+                        report.failed.forEach { Text(it, modifier = Modifier.padding(start = 12.dp)) }
+                    }
+                    report.error?.let { Text(it, modifier = Modifier.padding(top = 12.dp)) }
+                }
+            },
+            confirmButton = { androidx.compose.material3.TextButton(onClick = { autoImportReport = null }) { Text("Done") } },
+            dismissButton = {
+                if (com.xnotes.platform.AutoImportWorkflow.canDeleteOriginals(report.imported) && editor.autoImportSourceUri?.let { source ->
+                    resolver.persistedUriPermissions.any { it.uri.toString() == source && it.isWritePermission }
+                } == true) androidx.compose.material3.TextButton(onClick = { confirmDeleteOriginals = true }) {
+                    Text("Delete imported originals")
+                }
+            },
+        )
+    }
+    if (confirmDeleteOriginals) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { confirmDeleteOriginals = false },
+        title = { Text("Delete source PDFs?") },
+        text = { Text("Only successfully copied PDFs whose source has not changed will be deleted. The xNotes copies will remain.") },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = {
+            val items = autoImportReport?.imported.orEmpty()
+            confirmDeleteOriginals = false
+            scope.launch {
+                val deleted = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { autoImport.deleteOriginals(items) }
+                editor.message = "Deleted $deleted imported original${if (deleted == 1) "" else "s"}."
+                autoImportReport = null
+            }
+        }) { Text("Delete originals") } },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = { confirmDeleteOriginals = false }) { Text("Cancel") } },
+    )
     if (showShareChooser) {
         val shareUri = pendingShareUri
         // Remembered because resolving the kind is a SAF query, and this is composition.
@@ -989,18 +1096,20 @@ private fun SplitHost(editor: Editor, actions: PaneActions) {
             y = if (sideBySide) 0.dp else along,
         )
 
-        if (editor.noteOpen) {
+        val leftEditor = if (editor.primaryOnLeft) editor else second
+        val rightEditor = if (editor.primaryOnLeft) second else editor
+        if (leftEditor?.noteOpen == true) {
             EditorPane(
-                editor = editor,
+                editor = leftEditor,
                 app = editor,
                 actions = actions,
                 closable = split,
                 modifier = paneSize(firstExtent),
             )
         }
-        if (second?.noteOpen == true) {
+        if (rightEditor?.noteOpen == true) {
             EditorPane(
-                editor = second,
+                editor = rightEditor,
                 app = editor,
                 actions = actions,
                 closable = split,

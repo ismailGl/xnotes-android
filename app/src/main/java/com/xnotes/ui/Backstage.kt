@@ -177,6 +177,8 @@ fun Backstage(
     onImportCodeTheme: () -> Unit = {},
     /** Preferences asked to import a font file. */
     onImportFont: () -> Unit = {},
+    onPickAutoImportFolder: () -> Unit = {},
+    onScanAutoImport: () -> Unit = {},
     /** Two picked files are to be opened together, one per pane of a split view. */
     onOpenSplit: (String, String) -> Unit = { _, _ -> },
 ) {
@@ -187,7 +189,7 @@ fun Backstage(
     BackstageContent(
         editor, compact, view, onSelectView, onOpenSystem, onImportPdf,
         onOpenFile, onPickRoot, onShareFile, onSaveCopyFile, onExportFilePdf, onExitApp, onImportCodeTheme, onImportFont,
-        onOpenSplit,
+        onOpenSplit, onPickAutoImportFolder, onScanAutoImport,
     )
 }
 
@@ -219,6 +221,8 @@ private fun BackstageContent(
     onImportCodeTheme: () -> Unit,
     onImportFont: () -> Unit,
     onOpenSplit: (String, String) -> Unit,
+    onPickAutoImportFolder: () -> Unit,
+    onScanAutoImport: () -> Unit,
 ) {
     val palette = LocalPalette.current
     var createMode by remember { mutableStateOf(CreateMode.NONE) }
@@ -272,7 +276,7 @@ private fun BackstageContent(
             BackstageMain(
                 Modifier.fillMaxSize(), editor, view, compact, sidebarOpen, { animateClose = true; sidebarOpen = true }, { selectView(BackstageView.HOME) },
                 onOpenFile, onPickRoot, importPdf, onShareFile, onSaveCopyFile, onExportFilePdf, createMode, { createMode = it }, onImportCodeTheme, onImportFont,
-                onOpenSplit,
+                onOpenSplit, onPickAutoImportFolder, onScanAutoImport,
             )
             AnimatedVisibility(
                 visible = sidebarOpen,
@@ -302,7 +306,7 @@ private fun BackstageContent(
             BackstageMain(
                 Modifier.weight(1f).fillMaxHeight(), editor, view, compact, sidebarOpen, { sidebarOpen = true }, { selectView(BackstageView.HOME) },
                 onOpenFile, onPickRoot, importPdf, onShareFile, onSaveCopyFile, onExportFilePdf, createMode, { createMode = it }, onImportCodeTheme, onImportFont,
-                onOpenSplit,
+                onOpenSplit, onPickAutoImportFolder, onScanAutoImport,
             )
         }
     }
@@ -368,6 +372,8 @@ private fun BackstageMain(
     onImportCodeTheme: () -> Unit,
     onImportFont: () -> Unit,
     onOpenSplit: (String, String) -> Unit,
+    onPickAutoImportFolder: () -> Unit,
+    onScanAutoImport: () -> Unit,
 ) {
     val palette = LocalPalette.current
     Column(modifier) {
@@ -396,7 +402,8 @@ private fun BackstageMain(
                     onShareFile, onSaveCopyFile, onExportFilePdf, createMode, onCreateMode, sidebarOpen, onShowSidebar,
                     onOpenSplit,
                 )
-                BackstageView.PREFERENCES -> PreferencesPane(editor, compact, sidebarOpen, onShowSidebar, onBackToHome, onImportCodeTheme, onImportFont)
+                BackstageView.PREFERENCES -> PreferencesPane(editor, compact, sidebarOpen, onShowSidebar, onBackToHome,
+                    onImportCodeTheme, onImportFont, onPickAutoImportFolder, onScanAutoImport)
                 BackstageView.ABOUT -> AboutPane()
             }
         }

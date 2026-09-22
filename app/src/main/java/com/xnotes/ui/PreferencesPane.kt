@@ -119,6 +119,8 @@ fun PreferencesPane(
     onBackToHome: () -> Unit,
     onImportCodeTheme: () -> Unit = {},
     onImportFont: () -> Unit = {},
+    onPickAutoImportFolder: () -> Unit = {},
+    onScanAutoImport: () -> Unit = {},
 ) {
     val palette = LocalPalette.current
     val focusManager = LocalFocusManager.current
@@ -243,6 +245,20 @@ fun PreferencesPane(
                 }
             }
             CheckRow("Start in fullscreen", editor.fullscreen) { editor.setFullscreenPref(it) }
+
+            HorizontalDivider(color = palette.border.toComposeColor())
+            SectionTitle("Auto Import")
+            CheckRow("Auto Import PDFs on launch", editor.autoImportPdfs) { editor.setAutoImportPdfs(it) }
+            Text(if (editor.autoImportSourceUri == null) "No source folder selected" else "Source folder selected",
+                color = palette.textDim.toComposeColor(), fontSize = 13.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onPickAutoImportFolder) {
+                    Text(if (editor.autoImportSourceUri == null) "Choose folder" else "Change folder")
+                }
+                TextButton(onClick = onScanAutoImport, enabled = editor.autoImportSourceUri != null && editor.browseRoot != null) {
+                    Text("Scan now")
+                }
+            }
 
             HorizontalDivider(color = palette.border.toComposeColor())
             SectionTitle("Input")

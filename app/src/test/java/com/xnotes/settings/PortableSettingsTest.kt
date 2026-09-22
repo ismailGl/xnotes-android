@@ -84,4 +84,14 @@ class PortableSettingsTest {
         assertNull(restored.prefs.startFullscreen)
         assertNull(restored.prefs.materialSeed)
     }
+
+    @Test fun autoImportPreferenceFollowsFolderButSafGrantDoesNot() {
+        val files = files()
+        FolderSettingsStore(files).save(Settings(autoImportPdfs = true,
+            autoImportSourceUri = "content://old-install/source"))
+        val restored = FolderSettingsStore(files).restore(Settings(browseRoot = "content://new-install/folder"))
+        assertTrue(restored.autoImportPdfs)
+        assertNull(restored.autoImportSourceUri)
+        assertFalse(files.read("settings.json")!!.decodeToString().contains("old-install"))
+    }
 }
